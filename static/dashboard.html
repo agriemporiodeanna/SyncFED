@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Bman Sync Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; text-align: center; background-color: #f0f2f5; }
+        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1); min-width: 350px; }
+        h1 { color: #1a1a1a; margin-bottom: 25px; }
+        button { background-color: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; transition: background 0.3s; width: 100%; margin-bottom: 10px; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #status { margin-top: 20px; padding: 10px; border-radius: 4px; font-weight: bold; }
+        .loading { color: #856404; background-color: #fff3cd; }
+        .success { color: #155724; background-color: #d4edda; }
+        .error { color: #721c24; background-color: #f8d7da; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bman Sync</h1>
+        <button id="btn-articoli" onclick="runSync('sync-articoli')">Sincronizza Articoli</button>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        async function runSync(endpoint) {
+            const btn = document.getElementById('btn-articoli');
+            const statusDiv = document.getElementById('status');
+            
+            btn.disabled = true;
+            statusDiv.className = 'loading';
+            statusDiv.innerText = "Sincronizzazione in corso (estrazione pagine)...";
+
+            try {
+                const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    statusDiv.className = 'success';
+                    statusDiv.innerText = data.message;
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                statusDiv.className = 'error';
+                statusDiv.innerText = "Errore: " + error.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

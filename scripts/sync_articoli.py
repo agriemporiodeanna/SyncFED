@@ -12,15 +12,16 @@ def run():
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    clean_url = base_url.strip().rstrip('/')
-    bman_url = f"{clean_url}/getAnagrafiche"
+    bman_url = base_url.strip().rstrip('/')
+    if not bman_url.endswith('/getAnagrafiche'):
+        bman_url = f"{bman_url}/getAnagrafiche"
 
-    # Autenticazione Google Sheet
+    # Autenticazione Google Sheet con gestione errori private_key_id
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID", "sync-project"),
-        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "123456789"),
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "12345"),
         "private_key": private_key.replace('\\n', '\n'),
         "client_email": client_email,
         "token_uri": "https://oauth2.googleapis.com/token",
@@ -31,22 +32,24 @@ def run():
     tutti_articoli = []
     pagina = 1
     
+    # Header per Bman
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    
     while True:
-        # Parametri obbligatori per getAnagrafiche
         payload = {
             'chiave': bman_key,
             'filtri': json.dumps([]),
             'ordinamentoCampo': 'ID',
             'ordinamentoDirezione': 1,
-            'numero di pagina': pagina, # Parametro con spazi
+            'numero di pagina': pagina, #
             'listaDepositi': '',
-            'dettaglioVarianti': 'False'
+            'dettaglioVarianti': 'false'
         }
         
-        response = requests.post(bman_url, data=payload, timeout=20)
+        response = requests.post(bman_url, data=payload, headers=headers, timeout=30)
         
         if response.status_code != 200:
-            raise Exception(f"Errore Bman a pagina {pagina}: Stato {response.status_code}")
+            raise Exception(f"Errore Bman a pagina {pagina}: {response.text[:100]}")
             
         data = response.json()
         if not data or len(data) == 0:
@@ -54,21 +57,20 @@ def run():
             
         tutti_articoli.extend(data)
         pagina += 1
-        # Massimo 5 richieste al secondo per la versione Enterprise
-        time.sleep(0.25)
+        time.sleep(0.3) # Rispetto limite 5 req/sec
 
-    # Scrittura dati su Google Sheet
+    # Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo Vendita (IVA escl.)"]
+    # Intestazione basata sulla risposta tipo di Bman
+    header = ["ID", "Codice", "Giacenza", "Prezzo Vendita (przc)"]
     rows = [header]
     
     for art in tutti_articoli:
         rows.append([
             art.get("ID"), 
             art.get("codice"), 
-            art.get("descrizioneHtml", ""), 
             art.get("giacenza"), 
-            art.get("przc") # przc è il prezzo di vendita
+            art.get("przc") #
         ])
     
     sheet.clear()

@@ -12,9 +12,11 @@ def run():
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    bman_url = f"{base_url}/getAnagrafiche"
+    # Pulizia e costruzione URL
+    clean_url = base_url.strip().rstrip('/')
+    bman_url = f"{clean_url}/getAnagrafiche"
 
-    # Autenticazione con dizionario completo
+    # Autenticazione Google
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -42,9 +44,9 @@ def run():
             'dettaglioVarianti': 'False'
         }
         
-        response = requests.post(bman_url, data=payload)
+        response = requests.post(bman_url, data=payload, timeout=20)
         if response.status_code != 200:
-            raise Exception(f"Errore Bman: {response.status_code}")
+            raise Exception(f"Errore Bman al caricamento pagina {pagina}: Stato {response.status_code}")
             
         data = response.json()
         if not data or len(data) == 0:
@@ -54,12 +56,19 @@ def run():
         pagina += 1
         time.sleep(0.25)
 
+    # Scrittura su Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo Vendita"]
     rows = [header]
     
     for art in tutti_articoli:
-        rows.append([art.get("ID"), art.get("codice"), art.get("descrizioneHtml", ""), art.get("giacenza"), art.get("przc")])
+        rows.append([
+            art.get("ID"), 
+            art.get("codice"), 
+            art.get("descrizioneHtml", ""), 
+            art.get("giacenza"), 
+            art.get("przc")
+        ])
     
     sheet.clear()
     sheet.update('A1', rows)

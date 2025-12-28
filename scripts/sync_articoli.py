@@ -16,15 +16,13 @@ def run():
     
     # 2. Configurazione Credenziali Google (Dizionario Completo)
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    
-    # Costruiamo il dizionario completo per evitare errori come 'client_id' o 'private_key_id'
     creds_dict = {
         "type": "service_account",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID", "sync-project"),
         "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "1234567890"),
         "private_key": private_key.replace('\\n', '\n'),
         "client_email": client_email,
-        "client_id": "1234567890", # Campo ora inserito per risolvere l'errore
+        "client_id": "1234567890",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
@@ -61,29 +59,35 @@ def run():
 
         response = requests.post(bman_url, data=soap_body, headers=headers, timeout=30)
         
+        # Se ricevi HTML invece di XML, interrompi con errore chiaro
         if response.status_code != 200:
-            raise Exception(f"Errore Bman a pagina {pagina}: Stato {response.status_code}")
+             raise Exception(f"Errore Bman: Il server ha risposto con codice {response.status_code}. Verifica l'URL.")
+        
+        if "<html>" in response.text:
+             raise Exception("Il server Bman ha restituito una pagina HTML invece di dati. Controlla che l'endpoint sia corretto.")
 
         # Parsing XML per estrarre il JSON
-        tree = ET.fromstring(response.content)
-        namespaces = {
-            'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
-            'ns': 'http://cloud.bman.it/'
-        }
-        
-        result_node = tree.find('.//ns:getAnagraficheResult', namespaces)
-        
-        if result_node is None or not result_node.text:
-            break
+        try:
+            tree = ET.fromstring(response.content)
+            namespaces = {
+                'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
+                'ns': 'http://cloud.bman.it/'
+            }
+            result_node = tree.find('.//ns:getAnagraficheResult', namespaces)
             
-        data = json.loads(result_node.text)
+            if result_node is None or not result_node.text:
+                break
+                
+            data = json.loads(result_node.text) # Converte la stringa CDATA in JSON
+        except Exception as e:
+            raise Exception(f"Errore nel processare la risposta della pagina {pagina}: {str(e)}")
         
         if not data or len(data) == 0:
             break
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.3) # Rispetto limite 5 req/sec
+        time.sleep(0.3) # Limite massimo 5 richieste al secondo
 
     # 4. Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)

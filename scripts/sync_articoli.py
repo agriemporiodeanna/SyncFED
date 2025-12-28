@@ -14,7 +14,7 @@ def run():
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    # 2. Configurazione Credenziali Google Completa
+    # 2. Configurazione Credenziali Google (Dizionario Completo)
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -35,7 +35,10 @@ def run():
     tutti_articoli = []
     pagina = 1
     
-    # 3. Ciclo SOAP
+    # Namespace SOAP
+    namespaces = {'ns': 'http://cloud.bman.it/'}
+    
+    # 3. Ciclo di estrazione dati SOAP Bman
     while True:
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -46,7 +49,7 @@ def run():
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>{pagina}</numeroPagina>
-      <listaDepositi><![CDATA[]]></listaDepositi>
+      <listaDepositi><![CDATA[[]]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
@@ -57,41 +60,44 @@ def run():
             'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
         }
 
-        response = requests.post(bman_url, data=soap_body, headers=headers, timeout=30)
+        # Aumentato il timeout della singola richiesta a 60 secondi
+        response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
         
-        # Protezione anti-HTML
-        if "<html>" in response.text:
-             raise Exception(f"Errore Bman: Il server ha restituito HTML invece di XML. Pagina {pagina}.")
-
         if response.status_code != 200:
-             raise Exception(f"Errore Bman: Stato {response.status_code} alla pagina {pagina}.")
+             raise Exception(f"Errore Bman a pagina {pagina}: Stato {response.status_code}")
 
         # Parsing XML
         tree = ET.fromstring(response.content)
-        namespaces = {'ns': 'http://cloud.bman.it/'}
         result_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
         
         if result_node is None or not result_node.text:
             break
             
-        data = json.loads(result_node.text) # Parsa la stringa JSON contenuta nell'XML
+        data = json.loads(result_node.text) # Parsa il JSON CDATA
         
         if not data or len(data) == 0:
             break
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.3) # Rispetto limite 5 req/sec
+        
+        # Rispetto del limite (5 richieste al secondo = 0.2s tra chiamate)
+        time.sleep(0.2) 
 
-    # 4. Scrittura Sheet
+    # 4. Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    header = ["ID", "Codice", "Giacenza", "Prezzo Vendita"]
+    header = ["ID", "Codice", "Giacenza", "Prezzo Vendita (przc)"]
     rows = [header]
     
     for art in tutti_articoli:
-        rows.append([art.get("ID"), art.get("codice"), art.get("giacenza"), art.get("przc")])
+        rows.append([
+            art.get("ID"), 
+            art.get("codice"), 
+            art.get("giacenza"), 
+            art.get("przc")
+        ])
     
     sheet.clear()
     sheet.update('A1', rows)
     
-    return f"Sincronizzati {len(tutti_articoli)} articoli con successo!"
+    return f"Sincronizzazione completata! {len(tutti_articoli)} articoli importati."

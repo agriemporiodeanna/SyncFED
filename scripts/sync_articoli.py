@@ -7,28 +7,38 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
+    # 1. Recupero ENV da Render
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
+    private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    # Credenziali Google
+    # 2. Configurazione Credenziali Google (Dizionario Completo)
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    
+    # Costruiamo il dizionario completo per evitare errori come 'client_id' o 'private_key_id'
     creds_dict = {
         "type": "service_account",
-        "client_email": os.environ.get("GOOGLE_CLIENT_EMAIL"),
-        "private_key": os.environ.get("GOOGLE_PRIVATE_KEY").replace('\\n', '\n'),
-        "token_uri": "https://oauth2.googleapis.com/token",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID", "sync-project"),
-        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "12345")
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "1234567890"),
+        "private_key": private_key.replace('\\n', '\n'),
+        "client_email": client_email,
+        "client_id": "1234567890", # Campo ora inserito per risolvere l'errore
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace('@', '%40')}"
     }
+    
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
     tutti_articoli = []
     pagina = 1
     
+    # 3. Ciclo di estrazione dati SOAP Bman
     while True:
-        # Template SOAP identico al tuo esempio funzionante
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -44,45 +54,53 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
 
-        headers = {{
+        headers = {
             'Content-Type': 'text/xml; charset=utf-8',
             'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
-        }}
+        }
 
         response = requests.post(bman_url, data=soap_body, headers=headers, timeout=30)
         
         if response.status_code != 200:
-            break
+            raise Exception(f"Errore Bman a pagina {pagina}: Stato {response.status_code}")
 
-        # Parsing XML per estrarre il risultato JSON
+        # Parsing XML per estrarre il JSON
         tree = ET.fromstring(response.content)
-        # Namespace SOAP
-        namespaces = {{
+        namespaces = {
             'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
             'ns': 'http://cloud.bman.it/'
-        }}
+        }
         
         result_node = tree.find('.//ns:getAnagraficheResult', namespaces)
+        
         if result_node is None or not result_node.text:
             break
             
         data = json.loads(result_node.text)
+        
         if not data or len(data) == 0:
             break
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.3)
+        time.sleep(0.3) # Rispetto limite 5 req/sec
 
-    # Scrittura su Google Sheet
+    # 4. Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    header = ["ID", "Codice", "Giacenza", "Prezzo Vendita (IVA escl.)"]
+    
+    header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo Vendita (przc)"]
     rows = [header]
     
     for art in tutti_articoli:
-        rows.append([art.get("ID"), art.get("codice"), art.get("giacenza"), art.get("przc")])
+        rows.append([
+            art.get("ID"), 
+            art.get("codice"), 
+            art.get("descrizioneHtml", ""), 
+            art.get("giacenza"), 
+            art.get("przc")
+        ])
     
     sheet.clear()
     sheet.update('A1', rows)
     
-    return f"Sincronizzazione completata: {len(tutti_articoli)} articoli importati."
+    return f"Sincronizzazione completata! {len(tutti_articoli)} articoli importati."

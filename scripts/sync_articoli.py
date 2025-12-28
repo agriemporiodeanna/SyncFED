@@ -7,14 +7,14 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # 1. Recupero ENV da Render
+    # 1. Recupero ENV
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    # 2. Configurazione Credenziali Google (Dizionario Completo)
+    # 2. Configurazione Credenziali Google Completa
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -35,7 +35,7 @@ def run():
     tutti_articoli = []
     pagina = 1
     
-    # 3. Ciclo di estrazione dati SOAP Bman
+    # 3. Ciclo SOAP
     while True:
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -59,52 +59,39 @@ def run():
 
         response = requests.post(bman_url, data=soap_body, headers=headers, timeout=30)
         
-        # Se ricevi HTML invece di XML, interrompi con errore chiaro
-        if response.status_code != 200:
-             raise Exception(f"Errore Bman: Il server ha risposto con codice {response.status_code}. Verifica l'URL.")
-        
+        # Protezione anti-HTML
         if "<html>" in response.text:
-             raise Exception("Il server Bman ha restituito una pagina HTML invece di dati. Controlla che l'endpoint sia corretto.")
+             raise Exception(f"Errore Bman: Il server ha restituito HTML invece di XML. Pagina {pagina}.")
 
-        # Parsing XML per estrarre il JSON
-        try:
-            tree = ET.fromstring(response.content)
-            namespaces = {
-                'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
-                'ns': 'http://cloud.bman.it/'
-            }
-            result_node = tree.find('.//ns:getAnagraficheResult', namespaces)
+        if response.status_code != 200:
+             raise Exception(f"Errore Bman: Stato {response.status_code} alla pagina {pagina}.")
+
+        # Parsing XML
+        tree = ET.fromstring(response.content)
+        namespaces = {'ns': 'http://cloud.bman.it/'}
+        result_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
+        
+        if result_node is None or not result_node.text:
+            break
             
-            if result_node is None or not result_node.text:
-                break
-                
-            data = json.loads(result_node.text) # Converte la stringa CDATA in JSON
-        except Exception as e:
-            raise Exception(f"Errore nel processare la risposta della pagina {pagina}: {str(e)}")
+        data = json.loads(result_node.text) # Parsa la stringa JSON contenuta nell'XML
         
         if not data or len(data) == 0:
             break
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.3) # Limite massimo 5 richieste al secondo
+        time.sleep(0.3) # Rispetto limite 5 req/sec
 
-    # 4. Scrittura su Google Sheet
+    # 4. Scrittura Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    
-    header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo Vendita (przc)"]
+    header = ["ID", "Codice", "Giacenza", "Prezzo Vendita"]
     rows = [header]
     
     for art in tutti_articoli:
-        rows.append([
-            art.get("ID"), 
-            art.get("codice"), 
-            art.get("descrizioneHtml", ""), 
-            art.get("giacenza"), 
-            art.get("przc")
-        ])
+        rows.append([art.get("ID"), art.get("codice"), art.get("giacenza"), art.get("przc")])
     
     sheet.clear()
     sheet.update('A1', rows)
     
-    return f"Sincronizzazione completata! {len(tutti_articoli)} articoli importati."
+    return f"Sincronizzati {len(tutti_articoli)} articoli con successo!"

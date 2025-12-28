@@ -6,30 +6,43 @@
     <title>Bman Sync Dashboard</title>
     <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; text-align: center; background-color: #f4f7f6; }
-        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.08); min-width: 400px; }
+        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.08); min-width: 450px; }
         h1 { color: #333; margin-bottom: 30px; }
-        .btn { color: white; border: none; padding: 14px 20px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: all 0.3s; width: 100%; margin-bottom: 15px; font-weight: bold; }
+        .btn { color: white; border: none; padding: 14px 20px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: all 0.3s; width: 100%; margin-bottom: 15px; font-weight: bold; text-align: left; }
+        
         .btn-google { background-color: #34a853; }
         .btn-google:hover { background-color: #2d8e47; }
+        
+        .btn-bman { background-color: #ff9800; }
+        .btn-bman:hover { background-color: #e68a00; }
+        
         .btn-sync { background-color: #4285f4; }
         .btn-sync:hover { background-color: #357ae8; }
-        button:disabled { background-color: #bdc3c7; cursor: not-allowed; transform: scale(1) !important; }
-        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; }
+        
+        button:disabled { background-color: #bdc3c7; cursor: not-allowed; opacity: 0.7; }
+        
+        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; min-height: 20px; }
         .loading { display: block !important; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; }
         .success { display: block !important; color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
         .error { display: block !important; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
+        
+        .step-num { background: rgba(0,0,0,0.2); padding: 2px 8px; border-radius: 50%; margin-right: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Sync Dashboard</h1>
+        <h1>Pannello di Controllo Sync</h1>
         
-        <button id="btn-test" class="btn btn-google" onclick="runAction('test-google', 'btn-test')">
-            1. Verifica Chiave Google
+        <button id="btn-goog" class="btn btn-google" onclick="runAction('test-google', 'btn-goog')">
+            <span class="step-num">1</span> Verifica Connessione Google Sheet
+        </button>
+        
+        <button id="btn-bm-test" class="btn btn-bman" onclick="runAction('test-bman', 'btn-bm-test')">
+            <span class="step-num">2</span> Test Connessione Dati Bman
         </button>
         
         <button id="btn-art" class="btn btn-sync" onclick="runAction('sync-articoli', 'btn-art')">
-            2. Sincronizza Articoli Bman
+            <span class="step-num">3</span> Sincronizza Articoli (Bman -> Google)
         </button>
 
         <div id="status"></div>
@@ -37,14 +50,13 @@
 
     <script>
         async function runAction(endpoint, btnId) {
-            const btn = document.getElementById(btnId);
             const statusDiv = document.getElementById('status');
             const allBtns = document.querySelectorAll('.btn');
             
-            // Disabilita UI durante l'operazione
+            // Reset e caricamento
             allBtns.forEach(b => b.disabled = true);
             statusDiv.className = 'loading';
-            statusDiv.innerText = "Operazione in corso... attendere.";
+            statusDiv.innerText = "Elaborazione in corso...";
 
             try {
                 const response = await fetch(`/api/${endpoint}`, { method: 'POST' });

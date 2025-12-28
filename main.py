@@ -1,5 +1,6 @@
 import os
 from flask import Flask, send_from_directory, jsonify
+import traceback
 import scripts.sync_articoli as sync_articoli
 import scripts.test_google as test_google
 import scripts.test_bman as test_bman
@@ -10,31 +11,25 @@ app = Flask(__name__)
 def dashboard():
     return send_from_directory('static', 'dashboard.html')
 
-# 1. Test Google
-@app.route('/api/test-google', methods=['POST'])
-def trigger_test_google():
+@app.route('/api/<action>', methods=['POST'])
+def handle_api(action):
     try:
-        messaggio = test_google.run()
-        return jsonify({"status": "success", "message": messaggio})
+        if action == 'test-google':
+            msg = test_google.run()
+        elif action == 'test-bman':
+            msg = test_bman.run()
+        elif action == 'sync-articoli':
+            msg = sync_articoli.run()
+        else:
+            return jsonify({"status": "error", "message": "Azione non valida"}), 404
+        
+        return jsonify({"status": "success", "message": msg})
+    
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# 2. Test Bman
-@app.route('/api/test-bman', methods=['POST'])
-def trigger_test_bman():
-    try:
-        messaggio = test_bman.run()
-        return jsonify({"status": "success", "message": messaggio})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# 3. Sincronizzazione Totale
-@app.route('/api/sync-articoli', methods=['POST'])
-def trigger_articoli():
-    try:
-        messaggio = sync_articoli.run()
-        return jsonify({"status": "success", "message": messaggio})
-    except Exception as e:
+        # Stampiamo l'errore nei log di Render per vederlo
+        print(f"ERRORE API: {str(e)}")
+        traceback.print_exc()
+        # Restituiamo SEMPRE un JSON alla dashboard
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':

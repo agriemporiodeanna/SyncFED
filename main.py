@@ -1,9 +1,18 @@
 import os
 from flask import Flask, send_from_directory, jsonify
 import scripts.sync_articoli as sync_articoli
+import scripts.test_google as test_google
 
 app = Flask(__name__)
 
+@app.route('/api/test-google', methods=['POST'])
+def trigger_test_google():
+    try:
+        messaggio = test_google.run()
+        return jsonify({"status": "success", "message": messaggio})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+        
 @app.route('/dashboard.html')
 def dashboard():
     return send_from_directory('static', 'dashboard.html')

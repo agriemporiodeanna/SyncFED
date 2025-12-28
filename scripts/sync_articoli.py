@@ -12,11 +12,10 @@ def run():
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    bman_url = base_url.strip().rstrip('/')
-    if not bman_url.endswith('/getAnagrafiche'):
-        bman_url = f"{bman_url}/getAnagrafiche"
+    clean_url = base_url.strip().rstrip('/')
+    bman_url = f"{clean_url}/getAnagrafiche"
 
-    # Autenticazione Google Sheet con gestione errori private_key_id
+    # Autenticazione Google Sheet
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -32,24 +31,22 @@ def run():
     tutti_articoli = []
     pagina = 1
     
-    # Header per Bman
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    
     while True:
         payload = {
             'chiave': bman_key,
             'filtri': json.dumps([]),
             'ordinamentoCampo': 'ID',
-            'ordinamentoDirezione': 1,
-            'numero di pagina': pagina, #
+            'ordinamentoDirezione': '1', # Stringa per ASP.NET
+            'numero di pagina': str(pagina),
             'listaDepositi': '',
             'dettaglioVarianti': 'false'
         }
         
-        response = requests.post(bman_url, data=payload, headers=headers, timeout=30)
+        # Invia payload sia in URL che in Body per compatibilità ASMX
+        response = requests.post(bman_url, params=payload, data=payload, timeout=30)
         
         if response.status_code != 200:
-            raise Exception(f"Errore Bman a pagina {pagina}: {response.text[:100]}")
+            break
             
         data = response.json()
         if not data or len(data) == 0:
@@ -57,11 +54,10 @@ def run():
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.3) # Rispetto limite 5 req/sec
+        time.sleep(0.3) # Max 5 rich./sec
 
     # Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    # Intestazione basata sulla risposta tipo di Bman
     header = ["ID", "Codice", "Giacenza", "Prezzo Vendita (przc)"]
     rows = [header]
     
@@ -70,7 +66,7 @@ def run():
             art.get("ID"), 
             art.get("codice"), 
             art.get("giacenza"), 
-            art.get("przc") #
+            art.get("przc")
         ])
     
     sheet.clear()

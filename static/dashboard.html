@@ -23,6 +23,40 @@
         <div id="status"></div>
     </div>
 
+<button id="btn-test-google" style="background-color: #28a745;" onclick="runSync('test-google', 'btn-test-google')">
+    Verifica Connessione Google
+</button>
+
+<script>
+    // Modifichiamo leggermente la funzione per gestire ID diversi
+    async function runSync(endpoint, btnId) {
+        const btn = document.getElementById(btnId);
+        const statusDiv = document.getElementById('status');
+        const originalText = btn.innerText;
+        
+        btn.disabled = true;
+        statusDiv.className = 'loading';
+        statusDiv.innerText = "Verifica in corso...";
+
+        try {
+            const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                statusDiv.className = 'success';
+                statusDiv.innerText = data.message;
+            } else {
+                throw new Error(data.message);
+            }
+        } catch (error) {
+            statusDiv.className = 'error';
+            statusDiv.innerText = "Errore: " + error.message;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+</script>
+    
     <script>
         async function runSync(endpoint) {
             const btn = document.getElementById('btn-articoli');

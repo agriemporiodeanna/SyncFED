@@ -2,69 +2,49 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bman Sync Dashboard</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; text-align: center; background-color: #f0f2f5; }
-        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1); min-width: 350px; }
-        h1 { color: #1a1a1a; margin-bottom: 25px; }
-        button { background-color: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; transition: background 0.3s; width: 100%; margin-bottom: 10px; }
-        button:hover { background-color: #0056b3; }
-        button:disabled { background-color: #ccc; cursor: not-allowed; }
-        #status { margin-top: 20px; padding: 10px; border-radius: 4px; font-weight: bold; }
-        .loading { color: #856404; background-color: #fff3cd; }
-        .success { color: #155724; background-color: #d4edda; }
-        .error { color: #721c24; background-color: #f8d7da; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; text-align: center; background-color: #f4f7f6; }
+        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.08); min-width: 400px; }
+        h1 { color: #333; margin-bottom: 30px; }
+        .btn { color: white; border: none; padding: 14px 20px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: all 0.3s; width: 100%; margin-bottom: 15px; font-weight: bold; }
+        .btn-google { background-color: #34a853; }
+        .btn-google:hover { background-color: #2d8e47; }
+        .btn-sync { background-color: #4285f4; }
+        .btn-sync:hover { background-color: #357ae8; }
+        button:disabled { background-color: #bdc3c7; cursor: not-allowed; transform: scale(1) !important; }
+        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; }
+        .loading { display: block !important; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; }
+        .success { display: block !important; color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
+        .error { display: block !important; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Bman Sync</h1>
-        <button id="btn-articoli" onclick="runSync('sync-articoli')">Sincronizza Articoli</button>
+        <h1>Sync Dashboard</h1>
+        
+        <button id="btn-test" class="btn btn-google" onclick="runAction('test-google', 'btn-test')">
+            1. Verifica Chiave Google
+        </button>
+        
+        <button id="btn-art" class="btn btn-sync" onclick="runAction('sync-articoli', 'btn-art')">
+            2. Sincronizza Articoli Bman
+        </button>
+
         <div id="status"></div>
     </div>
 
-<button id="btn-test-google" style="background-color: #28a745;" onclick="runSync('test-google', 'btn-test-google')">
-    Verifica Connessione Google
-</button>
-
-<script>
-    // Modifichiamo leggermente la funzione per gestire ID diversi
-    async function runSync(endpoint, btnId) {
-        const btn = document.getElementById(btnId);
-        const statusDiv = document.getElementById('status');
-        const originalText = btn.innerText;
-        
-        btn.disabled = true;
-        statusDiv.className = 'loading';
-        statusDiv.innerText = "Verifica in corso...";
-
-        try {
-            const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                statusDiv.className = 'success';
-                statusDiv.innerText = data.message;
-            } else {
-                throw new Error(data.message);
-            }
-        } catch (error) {
-            statusDiv.className = 'error';
-            statusDiv.innerText = "Errore: " + error.message;
-        } finally {
-            btn.disabled = false;
-        }
-    }
-</script>
-    
     <script>
-        async function runSync(endpoint) {
-            const btn = document.getElementById('btn-articoli');
+        async function runAction(endpoint, btnId) {
+            const btn = document.getElementById(btnId);
             const statusDiv = document.getElementById('status');
+            const allBtns = document.querySelectorAll('.btn');
             
-            btn.disabled = true;
+            // Disabilita UI durante l'operazione
+            allBtns.forEach(b => b.disabled = true);
             statusDiv.className = 'loading';
-            statusDiv.innerText = "Sincronizzazione in corso (estrazione pagine)...";
+            statusDiv.innerText = "Operazione in corso... attendere.";
 
             try {
                 const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
@@ -80,7 +60,7 @@
                 statusDiv.className = 'error';
                 statusDiv.innerText = "Errore: " + error.message;
             } finally {
-                btn.disabled = false;
+                allBtns.forEach(b => b.disabled = false);
             }
         }
     </script>

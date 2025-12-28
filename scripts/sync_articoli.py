@@ -6,29 +6,31 @@ import time
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # Variabili Bman e Google da Render
     bman_key = os.environ.get("BMAN_API_KEY")
     base_url = os.environ.get("BMAN_BASE_URL")
-    bman_url = f"{base_url}/getAnagrafiche"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    # Autenticazione Google semplificata
+    bman_url = f"{base_url}/getAnagrafiche"
+
+    # Autenticazione con dizionario completo
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
-        "client_email": client_email,
+        "project_id": os.environ.get("GOOGLE_PROJECT_ID", "sync-project"),
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "123456789"),
         "private_key": private_key.replace('\\n', '\n'),
+        "client_email": client_email,
         "token_uri": "https://oauth2.googleapis.com/token",
     }
+    
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
     tutti_articoli = []
     pagina = 1
     
-    # Ciclo di paginazione Bman (50 articoli per volta)
     while True:
         payload = {
             'chiave': bman_key,
@@ -50,21 +52,14 @@ def run():
             
         tutti_articoli.extend(data)
         pagina += 1
-        time.sleep(0.25) # Rispetto limite 5 req/sec
+        time.sleep(0.25)
 
-    # Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo Vendita"]
     rows = [header]
     
     for art in tutti_articoli:
-        rows.append([
-            art.get("ID"),
-            art.get("codice"),
-            art.get("descrizioneHtml", ""),
-            art.get("giacenza"),
-            art.get("przc")
-        ])
+        rows.append([art.get("ID"), art.get("codice"), art.get("descrizioneHtml", ""), art.get("giacenza"), art.get("przc")])
     
     sheet.clear()
     sheet.update('A1', rows)

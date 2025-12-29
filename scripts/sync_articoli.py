@@ -7,19 +7,18 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def normalize_value(value):
-    """Replica la logica normalizeValue dello script JS"""
+    """Normalizzazione come da vecchio script JS"""
     if value is None: return ""
     return str(value).strip().lower()
 
 def run():
-    # 1. Recupero variabili ENV
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     client_email = os.environ.get("GOOGLE_CLIENT_EMAIL")
     private_key = os.environ.get("GOOGLE_PRIVATE_KEY")
     
-    # 2. Configurazione Google (include campi per risolvere errore private_key_id)
+    # Configurazione Google completa per risolvere errore 'client_id'
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -29,7 +28,9 @@ def run():
         "client_email": client_email,
         "client_id": "123456789",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token"
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace('@', '%40')}"
     }
     
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -40,8 +41,8 @@ def run():
     pagina = 1
     valori_target = ["si", "approvato"]
     
-    # 3. Scarico dati Bman via SOAP
     while True:
+        # Template SOAP identico al sistema stabile
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -72,15 +73,13 @@ def run():
         data = json.loads(result_node.text)
         if not data: break
             
-        # Filtro lato Python (Replica STEP B)
         for art in data:
             if normalize_value(art.get("opzionale11")) in valori_target:
                 articoli_filtrati.append(art)
 
         pagina += 1
-        time.sleep(0.25) # Rispetto limite 5 req/sec
+        time.sleep(0.25)
 
-    # 4. Aggiornamento Sheet (Delta Sync semplificato)
     header = ["ID", "Codice", "Descrizione", "Giacenza", "Prezzo", "Opzionale11"]
     rows = [header]
     for a in articoli_filtrati:

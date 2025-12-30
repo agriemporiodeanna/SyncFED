@@ -42,7 +42,7 @@ def run():
     workbook = client.open_by_key(sheet_id)
     sheet = workbook.get_worksheet(0)
 
-    # 2. Scarica dati da Bman
+    # 2. Scarica dati freschi da Bman
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -71,10 +71,10 @@ def run():
         if art_id not in bman_items: continue
         
         item_bman = bman_items[art_id]
+        dati_per_aggiornamento = item_bman.copy()
         modificato = False
-        dati_agg_bman = item_bman.copy()
         
-        # Recupero aliquota IVA (es. 22)
+        # Recupero aliquota IVA corretta
         try:
             aliquota = float(item_bman.get("iva", 0))
         except:
@@ -84,62 +84,63 @@ def run():
             val_sheet_raw = str(row.get(header_name, "")).strip()
             cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
             
-            # --- GESTIONE PREZZI (Calcolo Lordo) ---
+            # --- LOGICA PREZZI CON IVA AGGIUNTA ---
             if bman_key_attr in ["przc", "przb"]:
                 try:
-                    val_sheet = float(val_sheet_raw.replace(',', '.'))
+                    val_sheet_lordo = float(val_sheet_raw.replace(',', '.'))
                 except:
-                    val_sheet = 0.0
+                    val_sheet_lordo = 0.0
                 
-                # Calcoliamo il lordo da Bman (Netto * (1 + Aliquota/100))
+                # Calcolo del prezzo lordo REALE da Bman
                 val_bman_netto = float(item_bman.get(bman_key_attr, 0))
-                val_bman_lordo = round(val_bman_netto * (1 + aliquota / 100), 2)
+                val_bman_lordo_reale = round(val_bman_netto * (1 + aliquota / 100), 2)
 
-                if val_sheet == 0:
+                # Se il prezzo nel foglio è 0 o diverso dal lordo calcolato -> ROSSO
+                if val_sheet_lordo == 0 or abs(val_sheet_lordo - val_bman_lordo_reale) > 0.01:
                     formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
-                elif abs(val_sheet - val_bman_lordo) > 0.01:
-                    # Se l'utente ha cambiato il prezzo lordo nel foglio, scorporiamo l'IVA per Bman
-                    nuovo_netto = val_sheet / (1 + aliquota / 100)
-                    dati_agg_bman[bman_key_attr] = nuovo_netto
-                    modificato = True
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
                 else:
+                    # Se è corretto e sincronizzato -> BIANCO
                     formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                continue # Importante: non aggiungiamo i prezzi alla coda di modifica
 
-            # --- PROTEZIONE ID/CODICE ---
-            elif bman_key_attr in ["ID", "codice"]:
+            # --- PROTEZIONE ID / CODICE / IVA ---
+            if bman_key_attr in ["ID", "codice", "iva"]:
                 val_bman = str(item_bman.get(bman_key_attr, "")).strip()
-                if val_sheet_raw != val_bman:
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.6, "blue": 0.0}}})
-                else:
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}}})
+                color = {"red": 0.9, "green": 0.9, "blue": 0.9} if val_sheet_raw == val_bman else {"red": 1.0, "green": 0.6, "blue": 0.0}
+                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
+                continue
 
-            # --- ALTRI CAMPI ---
+            # --- ALTRI CAMPI TESTUALI (Titoli, Brand, Descrizioni) ---
+            val_bman = str(item_bman.get(bman_key_attr, "")).strip()
+            if not val_sheet_raw:
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
+            elif val_sheet_raw != val_bman:
+                dati_per_aggiornamento[bman_key_attr] = val_sheet_raw
+                modificato = True
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
             else:
-                val_bman = str(item_bman.get(bman_key_attr, "")).strip()
-                if not val_sheet_raw:
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
-                elif val_sheet_raw != val_bman:
-                    dati_agg_bman[bman_key_attr] = val_sheet_raw
-                    modificato = True
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
-                else:
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
 
         if modificato:
+            # Rimuoviamo i prezzi dall'invio per evitare sovrascritture accidentali
+            dati_per_aggiornamento.pop('przc', None)
+            dati_per_aggiornamento.pop('przb', None)
+            
             soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <setAnagrafica xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <anagrafica><![CDATA[{json.dumps(dati_agg_bman)}]]></anagrafica>
+      <anagrafica><![CDATA[{json.dumps(dati_per_aggiornamento)}]]></anagrafica>
     </setAnagrafica>
   </soap:Body>
 </soap:Envelope>"""
-            requests.post(bman_url, data=soap_body_set, headers={'Content-Type': 'text/xml'}, timeout=30)
+            
+            headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}
+            requests.post(bman_url, data=soap_body_set, headers=headers, timeout=30)
             prodotti_aggiornati += 1
 
     if formats:
         sheet.batch_format(formats)
     
-    return f"Sync completato. {prodotti_aggiornati} articoli aggiornati. I prezzi a zero sono evidenziati in rosso."
+    return f"Verifica completata. Aggiornati {prodotti_aggiornati} articoli. Prezzi lordi (IVA inclusa) verificati."

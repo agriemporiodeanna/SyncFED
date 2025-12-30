@@ -25,78 +25,85 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # Mappatura Campi Clienti
+    # Mappatura Campi Articoli (Solo Anagrafica Testuale)
     mappatura = {
-        "ID": "ID Contatto",
-        "ragioneSociale": "Ragione Sociale",
-        "email": "Email",
-        "telefono": "Telefono"
+        "ID": "ID", "codice": "Codice",
+        "opzionale1": "Brand", "opzionale2": "Titolo IT",
+        "opzionale11": "Script", "opzionale12": "Descrizione IT"
     }
 
     workbook = client.open_by_key(sheet_id)
-    # Tenta di accedere al tab "Anagrafica", altrimenti lo crea
-    try:
-        sheet = workbook.get_worksheet(1)
-        if not sheet: sheet = workbook.add_worksheet(title="Anagrafica", rows="100", cols="10")
-    except:
-        sheet = workbook.add_worksheet(title="Anagrafica", rows="100", cols="10")
+    # Usiamo il tab principale degli articoli
+    sheet = workbook.get_worksheet(0)
 
-    # 2. Scarica dati da Bman
+    # 2. Scarica dati correnti da Bman per confronto
+    filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getClienti xmlns="http://cloud.bman.it/">
+    <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <filtri><![CDATA[[]]]></filtri>
+      <filtri><![CDATA[{json.dumps(filtri)}]]></filtri>
+      <ordinamentoCampo>ID</ordinamentoCampo>
+      <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-    </getClienti>
+      <listaDepositi><![CDATA[[1]]]></listaDepositi>
+      <dettaglioVarianti>false</dettaglioVarianti>
+    </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>"""
     
     resp = requests.post(bman_url, data=soap_body_get, headers={'Content-Type': 'text/xml'}, timeout=60)
     tree = ET.fromstring(resp.content)
-    result_text = tree.find('.//{http://cloud.bman.it/}getClientiResult').text
-    bman_data = {str(c['ID']): c for c in json.loads(result_text)} if result_text else {}
+    result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
+    bman_items = {str(i['ID']): i for i in json.loads(result_text)} if result_text else {}
 
-    # 3. Leggi Google Sheet
-    sheet_values = sheet.get_all_records()
-    
-    if not sheet_values:
-        # Inizializzazione: se vuoto, scrive dati Bman
-        intestazioni = list(mappatura.values())
-        righe = [intestazioni]
-        for data in bman_data.values():
-            righe.append([data.get(k, "") for k in mappatura.keys()])
-        sheet.update('A1', righe)
-        return "Foglio 'Anagrafica' inizializzato con dati Bman. Premi di nuovo per la verifica colori."
-
-    # 4. Analisi e Formattazione
+    # 3. Leggi il Foglio Google
+    sheet_rows = sheet.get_all_records()
     formats = []
-    aggiornamenti_bman = 0
+    aggiornati = 0
 
-    for row_idx, row in enumerate(sheet_values, start=2):
-        c_id = str(row.get("ID Contatto"))
-        bman_contact = bman_data.get(c_id, {})
+    # 4. Confronto e Sincronizzazione verso Bman
+    for row_idx, row in enumerate(sheet_rows, start=2):
+        art_id = str(row.get("ID"))
+        if not art_id or art_id not in bman_items: continue
+        
+        item_bman = bman_items[art_id]
+        modificato = False
+        nuovi_dati = item_bman.copy()
 
-        for col_idx, (bman_key_attr, sheet_header) in enumerate(mappatura.items(), start=1):
-            val_sheet = str(row.get(sheet_header, "")).strip()
-            val_bman = str(bman_contact.get(bman_key_attr, "")).strip()
+        for col_idx, (bman_key_attr, header) in enumerate(mappatura.items(), start=1):
+            val_sheet = str(row.get(header, "")).strip()
+            val_bman = str(item_bman.get(bman_key_attr, "")).strip()
             cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
-            
-            # Logica colori
-            if not val_sheet:
-                # Rosso se vuota
-                color = {"red": 1.0, "green": 0.8, "blue": 0.8}
-            elif val_sheet != val_bman:
-                # Qui andrebbe la logica di setCliente per Bman se diversa
-                # Per ora evidenziamo come sincronizzato (Bianco) se il dato è presente
-                color = {"red": 1.0, "green": 1.0, "blue": 1.0}
-                aggiornamenti_bman += 1
-            else:
-                # Bianco se uguale
-                color = {"red": 1.0, "green": 1.0, "blue": 1.0}
-            
-            formats.append({"range": cell_range, "format": {"backgroundColor": color}})
 
-    sheet.batch_format(formats)
-    return f"Analisi completata. Sincronizzati {aggiornamenti_bman} campi. Celle vuote evidenziate in rosso."
+            if not val_sheet:
+                # Rosso se vuoto
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
+            elif val_sheet != val_bman:
+                # Se c'è un dato nuovo nel foglio, prepara l'invio a Bman
+                nuovi_dati[bman_key_attr] = val_sheet
+                modificato = True
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+            else:
+                # Bianco se sincronizzato
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+
+        if modificato:
+            # Invio a Bman con setAnagrafica
+            soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <setAnagrafica xmlns="http://cloud.bman.it/">
+      <chiave>{bman_key}</chiave>
+      <anagrafica><![CDATA[{json.dumps(nuovi_dati)}]]></anagrafica>
+    </setAnagrafica>
+  </soap:Body>
+</soap:Envelope>"""
+            requests.post(bman_url, data=soap_body_set, headers={'Content-Type': 'text/xml'}, timeout=30)
+            aggiornati += 1
+
+    if formats:
+        sheet.batch_format(formats)
+    
+    return f"Sincronizzazione Articoli completata. Aggiornati {aggiornati} record su Bman."

@@ -6,7 +6,6 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # 1. Configurazione e Credenziali
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -24,7 +23,6 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # Mappatura Campi (Stessa del Pulsante 4)
     mappatura = {
         "ID": "ID", "codice": "Codice",
         "opzionale1": "Brand", "opzionale2": "Titolo IT",
@@ -39,7 +37,6 @@ def run():
         "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
-    # 2. Recupero Dati da Bman (Filtro Script = si)
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -53,45 +50,37 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
     
-    headers = {'Content-Type': 'text/xml; charset=utf-8'}
-    resp = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
+    resp = requests.post(bman_url, data=soap_body, headers={'Content-Type': 'text/xml'}, timeout=60)
     tree = ET.fromstring(resp.content)
     result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
-    
-    if not result_text:
-        return "Nessun articolo trovato con Script='si'."
-    
-    articoli_bman = json.loads(result_text)
+    articoli_bman = json.loads(result_text) if result_text else []
 
-    # 3. Preparazione Righe per Google Sheet con Calcolo IVA
-    righe_da_scrivere = [list(mappatura.values())] # Intestazioni
+    righe_da_scrivere = [list(mappatura.values())]
     
     for art in articoli_bman:
         riga = []
-        # Recupero Aliquota IVA per l'articolo
         try:
             aliquota = float(art.get("iva", 0))
+            prezzo_netto = float(art.get("przc", 0))
+            prezzo_lordo = round(prezzo_netto * (1 + aliquota / 100), 2)
+            # Calcolo Prezzo Minimo: Prezzo Lordo - 20%
+            prezzo_minimo_lordo = round(prezzo_lordo * 0.80, 2)
         except:
-            aliquota = 0
+            prezzo_lordo = 0.0
+            prezzo_minimo_lordo = 0.0
 
-        for bman_key in mappatura.keys():
-            valore = art.get(bman_key, "")
-            
-            # --- LOGICA CALCOLO PREZZO LORDO ---
-            if bman_key in ["przc", "przb"]:
-                try:
-                    prezzo_netto = float(valore) if valore else 0.0
-                    valore = round(prezzo_netto * (1 + aliquota / 100), 2)
-                except:
-                    valore = 0.0
-            
+        for b_key in mappatura.keys():
+            if b_key == "przc":
+                valore = prezzo_lordo
+            elif b_key == "przb":
+                valore = prezzo_minimo_lordo
+            else:
+                valore = art.get(b_key, "")
             riga.append(valore)
         righe_da_scrivere.append(riga)
 
-    # 4. Scrittura su Google Sheet
-    workbook = client.open_by_key(sheet_id)
-    sheet = workbook.get_worksheet(0)
+    sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     sheet.update('A1', righe_da_scrivere)
     
-    return f"Sincronizzazione completata: {len(articoli_bman)} articoli scaricati con prezzi IVATI."
+    return f"Scaricate {len(articoli_bman)} anagrafiche. Prezzo Minimo calcolato come Prezzo Lordo -20%."

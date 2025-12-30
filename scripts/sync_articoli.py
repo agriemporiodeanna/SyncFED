@@ -6,20 +6,18 @@ import time
 import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
-def normalize_value(value):
-    if value is None: return ""
-    return str(value).strip().lower()
-
 def safe_value(value):
     if value is None: return ""
     if isinstance(value, (dict, list)): return json.dumps(value)
     return str(value)
 
 def run():
+    # 1. Recupero ENV
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
+    # 2. Configurazione Google
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -33,6 +31,7 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
+    # 3. Mappatura Campi
     mappatura = {
         "ID": "ID", "codice": "Codice", "opzionale1": "Brand", "opzionale2": "Titolo IT",
         "opzionale5": "Vinted", "opzionale6": "Titolo FR", "opzionale7": "Titolo EN",
@@ -44,21 +43,26 @@ def run():
         "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
+    # Definiamo i filtri direttamente per Bman
+    # Proviamo con 'si'. Se vuoi anche 'Approvato', Bman solitamente richiede filtri separati o operatore IN
+    filtri_bman = [
+        {"chiave": "opzionale11", "operatore": "=", "valore": "si"}
+    ]
+
     righe_per_sheet = []
     intestazioni = list(mappatura.values()) + ["Foto1", "Foto2", "Foto3", "Foto4", "Foto5"]
     righe_per_sheet.append(intestazioni)
 
     pagina = 1
-    valori_target = ["si", "approvato"]
-    totale_letti = 0
     
     while True:
+        # Chiamata SOAP con filtro integrato
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <filtri><![CDATA[[]]]></filtri>
+      <filtri><![CDATA[{json.dumps(filtri_bman)}]]></filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>{pagina}</numeroPagina>
@@ -69,41 +73,37 @@ def run():
 </soap:Envelope>"""
 
         headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
-        response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
-        tree = ET.fromstring(response.content)
-        result_node = tree.find('.//{{http://cloud.bman.it/}}getAnagraficheResult')
         
-        if result_node is None or not result_node.text: break
-        data = json.loads(result_node.text)
-        if not data: break
+        try:
+            response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
+            tree = ET.fromstring(response.content)
+            result_node = tree.find('.//{{http://cloud.bman.it/}}getAnagraficheResult')
             
-        totale_letti += len(data)
-        
-        for art in data:
-            val_opz11 = normalize_value(art.get("opzionale11"))
+            if result_node is None or not result_node.text: break
+            data = json.loads(result_node.text) #
             
-            # Debug log nel terminale di Render
-            if pagina == 1 and len(righe_per_sheet) < 5:
-                print(f"DEBUG: Articolo {art.get('ID')} - opzionale11: '{art.get('opzionale11')}'")
-
-            if val_opz11 in valori_target:
+            if not data or len(data) == 0: break
+                
+            for art in data:
                 riga = [safe_value(art.get(c)) for c in mappatura.keys()]
+                # Estrazione Foto
                 fotos = art.get("arrFoto", [])
                 for i in range(5):
                     url_f = fotos[i].get("url", fotos[i].get("percorso", "")) if i < len(fotos) else ""
                     riga.append(url_f)
                 righe_per_sheet.append(riga)
 
-        pagina += 1
-        time.sleep(0.2) 
+            pagina += 1
+            time.sleep(0.2) #
+        except Exception:
+            break
 
-    print(f"Sincronizzazione terminata. Letti: {totale_letti}, Filtrati: {len(righe_per_sheet)-1}")
-
+    # 4. Scrittura su Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     
     if len(righe_per_sheet) > 1:
         sheet.update('A1', righe_per_sheet)
-        return f"Sincronizzati {len(righe_per_sheet)-1} prodotti su {totale_letti} totali."
+        return f"Sincronizzazione completata! Esportati {len(righe_per_sheet)-1} prodotti con Script='si'."
     else:
-        return f"Nessun prodotto trovato. Letti {totale_letti} articoli, ma nessuno aveva 'Script' = si/approvato."
+        return "Nessun prodotto trovato con opzionale11 = 'si'. Verifica il valore in Bman."

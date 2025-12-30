@@ -16,7 +16,7 @@ def run():
     creds_dict = {
         "type": "service_account",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID"),
-        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "12345"),
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID"),
         "private_key": os.environ.get("GOOGLE_PRIVATE_KEY").replace('\\n', '\n'),
         "client_email": os.environ.get("GOOGLE_CLIENT_EMAIL"),
         "client_id": "12345",
@@ -25,7 +25,6 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # 2. Mappatura Integrale (Corrispondenza esatta con il tuo Google Sheet)
     mappatura = {
         "ID": "ID", "codice": "Codice",
         "opzionale1": "Brand", "opzionale2": "Titolo IT",
@@ -34,16 +33,16 @@ def run():
         "opzionale9": "Titolo DE", "opzionale11": "Script",
         "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
         "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
-        "opzionale16": "Descrizione DE", "przb": "Prezzo Minimo",
-        "przc": "Prezzo", "iva": "Iva",
+        "opzionale16": "Descrizione DE", 
+        "przb": "Prezzo Minimo", "przc": "Prezzo", "iva": "Iva",
         "descrizioneHtml": "Descrizione Completa",
         "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
     workbook = client.open_by_key(sheet_id)
-    sheet = workbook.get_worksheet(0) # Primo tab dove sono gli articoli
+    sheet = workbook.get_worksheet(0)
 
-    # 3. Scarica dati da Bman (Solo approvati Script=si)
+    # 2. Scarica dati da Bman
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -51,11 +50,8 @@ def run():
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
       <filtri><![CDATA[{json.dumps(filtri)}]]></filtri>
-      <ordinamentoCampo>ID</ordinamentoCampo>
-      <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
       <listaDepositi><![CDATA[[1]]]></listaDepositi>
-      <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>"""
@@ -65,55 +61,85 @@ def run():
     result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
     bman_items = {str(i['ID']): i for i in json.loads(result_text)} if result_text else {}
 
-    # 4. Leggi Google Sheet e analizza ogni cella
+    # 3. Leggi Google Sheet
     sheet_rows = sheet.get_all_records()
     formats = []
     prodotti_aggiornati = 0
 
     for row_idx, row in enumerate(sheet_rows, start=2):
-        art_id = str(row.get("ID"))
-        if not art_id or art_id not in bman_items: continue
+        art_id = str(row.get("ID")).strip()
+        if art_id not in bman_items: continue
         
         item_bman = bman_items[art_id]
-        modificato_per_questo_prodotto = False
-        dati_aggiornati_bman = item_bman.copy()
+        modificato = False
+        dati_agg_bman = item_bman.copy()
+        
+        # Recupero aliquota IVA (es. 22)
+        try:
+            aliquota = float(item_bman.get("iva", 0))
+        except:
+            aliquota = 0
 
-        # Cicliamo su ogni campo della mappatura
         for col_idx, (bman_key_attr, header_name) in enumerate(mappatura.items(), start=1):
-            val_sheet = str(row.get(header_name, "")).strip()
-            val_bman = str(item_bman.get(bman_key_attr, "")).strip()
+            val_sheet_raw = str(row.get(header_name, "")).strip()
             cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
+            
+            # --- GESTIONE PREZZI (Calcolo Lordo) ---
+            if bman_key_attr in ["przc", "przb"]:
+                try:
+                    val_sheet = float(val_sheet_raw.replace(',', '.'))
+                except:
+                    val_sheet = 0.0
+                
+                # Calcoliamo il lordo da Bman (Netto * (1 + Aliquota/100))
+                val_bman_netto = float(item_bman.get(bman_key_attr, 0))
+                val_bman_lordo = round(val_bman_netto * (1 + aliquota / 100), 2)
 
-            # Logica dei Colori
-            if not val_sheet:
-                # Rosso se la cella è vuota (manca un dato)
-                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
-            elif val_sheet != val_bman:
-                # Se c'è un dato nuovo nel foglio diverso da Bman, aggiorniamo
-                dati_aggiornati_bman[bman_key_attr] = val_sheet
-                modificato_per_questo_prodotto = True
-                # Bianco perché ora il dato è pronto per essere allineato
-                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                if val_sheet == 0:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
+                elif abs(val_sheet - val_bman_lordo) > 0.01:
+                    # Se l'utente ha cambiato il prezzo lordo nel foglio, scorporiamo l'IVA per Bman
+                    nuovo_netto = val_sheet / (1 + aliquota / 100)
+                    dati_agg_bman[bman_key_attr] = nuovo_netto
+                    modificato = True
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                else:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+
+            # --- PROTEZIONE ID/CODICE ---
+            elif bman_key_attr in ["ID", "codice"]:
+                val_bman = str(item_bman.get(bman_key_attr, "")).strip()
+                if val_sheet_raw != val_bman:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.6, "blue": 0.0}}})
+                else:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}}})
+
+            # --- ALTRI CAMPI ---
             else:
-                # Bianco se i dati coincidono già
-                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                val_bman = str(item_bman.get(bman_key_attr, "")).strip()
+                if not val_sheet_raw:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
+                elif val_sheet_raw != val_bman:
+                    dati_agg_bman[bman_key_attr] = val_sheet_raw
+                    modificato = True
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                else:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
 
-        # Se almeno un campo del prodotto è cambiato, inviamo a Bman
-        if modificato_per_questo_prodotto:
+        if modificato:
             soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <setAnagrafica xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <anagrafica><![CDATA[{json.dumps(dati_aggiornati_bman)}]]></anagrafica>
+      <anagrafica><![CDATA[{json.dumps(dati_agg_bman)}]]></anagrafica>
     </setAnagrafica>
   </soap:Body>
 </soap:Envelope>"""
             requests.post(bman_url, data=soap_body_set, headers={'Content-Type': 'text/xml'}, timeout=30)
             prodotti_aggiornati += 1
 
-    # 5. Applica formattazione colori in un colpo solo (veloce)
     if formats:
         sheet.batch_format(formats)
     
-    return f"Sincronizzazione completata. {prodotti_aggiornati} articoli aggiornati in Bman. Celle vuote evidenziate in rosso."
+    return f"Sync completato. {prodotti_aggiornati} articoli aggiornati. I prezzi a zero sono evidenziati in rosso."

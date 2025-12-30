@@ -7,7 +7,6 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # 1. Setup Credenziali
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -39,10 +38,8 @@ def run():
         "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
-    workbook = client.open_by_key(sheet_id)
-    sheet = workbook.get_worksheet(0)
-
-    # 2. Scarica dati freschi da Bman
+    sheet = client.open_by_key(sheet_id).get_worksheet(0)
+    
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -61,7 +58,6 @@ def run():
     result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
     bman_items = {str(i['ID']): i for i in json.loads(result_text)} if result_text else {}
 
-    # 3. Leggi Google Sheet
     sheet_rows = sheet.get_all_records()
     formats = []
     prodotti_aggiornati = 0
@@ -74,43 +70,41 @@ def run():
         dati_per_aggiornamento = item_bman.copy()
         modificato = False
         
-        # Recupero aliquota IVA corretta
         try:
             aliquota = float(item_bman.get("iva", 0))
+            p_netto_bman = float(item_bman.get("przc", 0))
+            p_lordo_bman = round(p_netto_bman * (1 + aliquota / 100), 2)
+            # Logica richiesta: Prezzo Minimo = Prezzo Lordo - 20%
+            p_minimo_target = round(p_lordo_bman * 0.80, 2)
         except:
-            aliquota = 0
+            p_lordo_bman = 0.0
+            p_minimo_target = 0.0
 
         for col_idx, (bman_key_attr, header_name) in enumerate(mappatura.items(), start=1):
             val_sheet_raw = str(row.get(header_name, "")).strip()
             cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
             
-            # --- LOGICA PREZZI CON IVA AGGIUNTA ---
-            if bman_key_attr in ["przc", "przb"]:
-                try:
-                    val_sheet_lordo = float(val_sheet_raw.replace(',', '.'))
-                except:
-                    val_sheet_lordo = 0.0
-                
-                # Calcolo del prezzo lordo REALE da Bman
-                val_bman_netto = float(item_bman.get(bman_key_attr, 0))
-                val_bman_lordo_reale = round(val_bman_netto * (1 + aliquota / 100), 2)
+            # --- LOGICA PREZZI ---
+            if bman_key_attr == "przc":
+                val_sheet = float(val_sheet_raw.replace(',', '.')) if val_sheet_raw else 0.0
+                color = {"red": 1.0, "green": 1.0, "blue": 1.0} if val_sheet > 0 and abs(val_sheet - p_lordo_bman) < 0.01 else {"red": 1.0, "green": 0.8, "blue": 0.8}
+                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
+                continue
 
-                # Se il prezzo nel foglio è 0 o diverso dal lordo calcolato -> ROSSO
-                if val_sheet_lordo == 0 or abs(val_sheet_lordo - val_bman_lordo_reale) > 0.01:
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
-                else:
-                    # Se è corretto e sincronizzato -> BIANCO
-                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
-                continue # Importante: non aggiungiamo i prezzi alla coda di modifica
+            if bman_key_attr == "przb":
+                val_sheet = float(val_sheet_raw.replace(',', '.')) if val_sheet_raw else 0.0
+                # Verifica se il Prezzo Minimo nel foglio rispetta il -20% del Prezzo Lordo
+                color = {"red": 1.0, "green": 1.0, "blue": 1.0} if val_sheet > 0 and abs(val_sheet - p_minimo_target) < 0.01 else {"red": 1.0, "green": 0.8, "blue": 0.8}
+                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
+                continue
 
-            # --- PROTEZIONE ID / CODICE / IVA ---
+            # --- ALTRI CAMPI E PROTEZIONI ---
             if bman_key_attr in ["ID", "codice", "iva"]:
                 val_bman = str(item_bman.get(bman_key_attr, "")).strip()
                 color = {"red": 0.9, "green": 0.9, "blue": 0.9} if val_sheet_raw == val_bman else {"red": 1.0, "green": 0.6, "blue": 0.0}
                 formats.append({"range": cell_range, "format": {"backgroundColor": color}})
                 continue
 
-            # --- ALTRI CAMPI TESTUALI (Titoli, Brand, Descrizioni) ---
             val_bman = str(item_bman.get(bman_key_attr, "")).strip()
             if not val_sheet_raw:
                 formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
@@ -122,10 +116,8 @@ def run():
                 formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
 
         if modificato:
-            # Rimuoviamo i prezzi dall'invio per evitare sovrascritture accidentali
             dati_per_aggiornamento.pop('przc', None)
             dati_per_aggiornamento.pop('przb', None)
-            
             soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -135,12 +127,10 @@ def run():
     </setAnagrafica>
   </soap:Body>
 </soap:Envelope>"""
-            
-            headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}
-            requests.post(bman_url, data=soap_body_set, headers=headers, timeout=30)
+            requests.post(bman_url, data=soap_body_set, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}, timeout=30)
             prodotti_aggiornati += 1
 
     if formats:
         sheet.batch_format(formats)
     
-    return f"Verifica completata. Aggiornati {prodotti_aggiornati} articoli. Prezzi lordi (IVA inclusa) verificati."
+    return f"Verifica completata. Aggiornati {prodotti_aggiornati} articoli. Prezzo Minimo validato come -20% del lordo."

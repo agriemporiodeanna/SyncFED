@@ -8,7 +8,6 @@ import scripts.sync_anagrafica as sync_anagrafica
 
 app = Flask(__name__)
 
-# Serve la dashboard sulla root e su /dashboard.html
 @app.route('/')
 @app.route('/dashboard.html')
 def dashboard():
@@ -24,7 +23,7 @@ def handle_api(action):
         elif action == 'sync-articoli':
             msg = sync_articoli.run()
         elif action == 'sync-anagrafica':
-            msg = sync_anagrafica.run()
+            msg = sync_anagrafica.run() # Gestisce l'aggiornamento anagrafica ARTICOLI
         else:
             return jsonify({"status": "error", "message": "Azione non valida"}), 404
         
@@ -33,11 +32,7 @@ def handle_api(action):
     except Exception as e:
         full_error = traceback.format_exc()
         print(f"ERRORE DETTAGLIATO:\n{full_error}")
-        return jsonify({
-            "status": "error", 
-            "message": f"Errore: {str(e)}", 
-            "details": full_error
-        }), 500
+        return jsonify({"status": "error", "message": str(e), "details": full_error}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))

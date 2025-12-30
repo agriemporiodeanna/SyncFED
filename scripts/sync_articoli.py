@@ -16,12 +16,10 @@ def safe_value(value):
     return str(value)
 
 def run():
-    # 1. Recupero ENV
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
-    # 2. Configurazione Google
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -35,38 +33,24 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # 3. Mappatura Campi (Senza Foto)
     mappatura = {
-        "ID": "ID",
-        "codice": "Codice",
-        "opzionale1": "Brand",
-        "opzionale2": "Titolo IT",
-        "opzionale5": "Vinted",
-        "opzionale6": "Titolo FR",
-        "opzionale7": "Titolo EN",
-        "opzionale8": "Titolo ES",
-        "opzionale9": "Titolo DE",
-        "opzionale11": "Script",
-        "opzionale12": "Descrizione IT",
-        "opzionale13": "Descrizione FR",
-        "opzionale14": "Descrizione EN",
-        "opzionale15": "Descrizione ES",
-        "opzionale16": "Descrizione DE",
-        "przb": "Prezzo Minimo",
-        "przc": "Prezzo",
-        "iva": "Iva",
-        "descrizioneHtml": "Descrizione Completa",
-        "categoria1str": "Categoria1",
-        "categoria2str": "Categoria2"
+        "ID": "ID", "codice": "Codice", "opzionale1": "Brand", "opzionale2": "Titolo IT",
+        "opzionale5": "Vinted", "opzionale6": "Titolo FR", "opzionale7": "Titolo EN",
+        "opzionale8": "Titolo ES", "opzionale9": "Titolo DE", "opzionale11": "Script",
+        "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
+        "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
+        "opzionale16": "Descrizione DE", "przb": "Prezzo Minimo", "przc": "Prezzo",
+        "iva": "Iva", "descrizioneHtml": "Descrizione Completa",
+        "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
     righe_per_sheet = []
-    # Aggiungiamo manualmente le intestazioni delle foto alla fine
     intestazioni = list(mappatura.values()) + ["Foto1", "Foto2", "Foto3", "Foto4", "Foto5"]
     righe_per_sheet.append(intestazioni)
 
     pagina = 1
-    valori_target = ["si", "approvato"] 
+    valori_target = ["si", "approvato"]
+    totale_letti = 0
     
     while True:
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -93,35 +77,33 @@ def run():
         data = json.loads(result_node.text)
         if not data: break
             
+        totale_letti += len(data)
+        
         for art in data:
-            if normalize_value(art.get("opzionale11")) in valori_target:
-                riga = []
-                # Campi standard
-                for campo_bman in mappatura.keys():
-                    riga.append(safe_value(art.get(campo_bman)))
-                
-                # --- LOGICA ESTRAZIONE FOTO ---
+            val_opz11 = normalize_value(art.get("opzionale11"))
+            
+            # Debug log nel terminale di Render
+            if pagina == 1 and len(righe_per_sheet) < 5:
+                print(f"DEBUG: Articolo {art.get('ID')} - opzionale11: '{art.get('opzionale11')}'")
+
+            if val_opz11 in valori_target:
+                riga = [safe_value(art.get(c)) for c in mappatura.keys()]
                 fotos = art.get("arrFoto", [])
                 for i in range(5):
-                    if i < len(fotos):
-                        # Bman restituisce solitamente il percorso relativo o l'URL nell'oggetto foto
-                        url_foto = fotos[i].get("url", fotos[i].get("percorso", ""))
-                        riga.append(url_foto)
-                    else:
-                        riga.append("") # Cella vuota se non c'è la foto
-                # ------------------------------
-                
+                    url_f = fotos[i].get("url", fotos[i].get("percorso", "")) if i < len(fotos) else ""
+                    riga.append(url_f)
                 righe_per_sheet.append(riga)
 
         pagina += 1
         time.sleep(0.2) 
 
-    # 4. Scrittura su Google Sheet
+    print(f"Sincronizzazione terminata. Letti: {totale_letti}, Filtrati: {len(righe_per_sheet)-1}")
+
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     
     if len(righe_per_sheet) > 1:
         sheet.update('A1', righe_per_sheet)
-        return f"Sincronizzazione completata! {len(righe_per_sheet)-1} prodotti con foto importati."
+        return f"Sincronizzati {len(righe_per_sheet)-1} prodotti su {totale_letti} totali."
     else:
-        return "Nessun prodotto trovato."
+        return f"Nessun prodotto trovato. Letti {totale_letti} articoli, ma nessuno aveva 'Script' = si/approvato."

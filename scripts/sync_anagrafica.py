@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # 1. Setup Credenziali
+    # 1. Configurazione Iniziale
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -41,7 +41,7 @@ def run():
 
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     
-    # 2. Scarica dati correnti da Bman per confronto
+    # 2. Recupero dati correnti da Bman per confronto
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -49,16 +49,14 @@ def run():
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
       <filtri><![CDATA[{json.dumps(filtri)}]]></filtri>
-      <ordinamentoCampo>ID</ordinamentoCampo>
-      <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
       <listaDepositi><![CDATA[[1]]]></listaDepositi>
     </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>"""
     
-    headers_get = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
-    resp = requests.post(bman_url, data=soap_get, headers=headers_get, timeout=60)
+    h_get = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
+    resp = requests.post(bman_url, data=soap_get, headers=h_get, timeout=60)
     tree = ET.fromstring(resp.content)
     res_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
     bman_items = {str(i['ID']): i for i in json.loads(res_node.text)} if res_node is not None else {}
@@ -68,6 +66,8 @@ def run():
     log_azioni = []
     prodotti_aggiornati = 0
 
+    # 
+
     for row_idx, row in enumerate(sheet_rows, start=2):
         art_id = str(row.get("ID")).strip()
         if art_id not in bman_items: continue
@@ -76,7 +76,7 @@ def run():
         nuovi_dati = item_bman.copy()
         campi_modificati = []
         
-        # --- CALCOLO PREZZI PER VERIFICA COLORI ---
+        # Verifica Prezzi e IVA (Sola Lettura)
         try:
             iva_val = float(item_bman.get("iva", 0))
             p_lordo_bman = round(float(item_bman.get("przc", 0)) * (1 + iva_val/100), 2)
@@ -89,7 +89,7 @@ def run():
             formats.append({"range": f"Q{row_idx}", "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1} if abs(val_przc_sheet - p_lordo_bman) < 0.01 else {"red": 1, "green": 0.8, "blue": 0.8}}})
         except: pass
 
-        # --- CONTROLLO MODIFICHE ---
+        # Identificazione campi modificati dall'utente
         for b_key, header in mappatura.items():
             if b_key in ["ID", "codice", "iva", "przc", "przb"]: continue
             
@@ -101,12 +101,12 @@ def run():
                 campi_modificati.append(header)
 
         if campi_modificati:
-            # Protezione prezzi: rimuoviamo przc e przb dall'invio
+            # Rimuoviamo i prezzi dall'invio come richiesto
             nuovi_dati.pop('przc', None)
             nuovi_dati.pop('przb', None)
-            nuovi_dati["IDDeposito"] = 1 # Obbligatorio per InsertAnagrafica
+            nuovi_dati["IDDeposito"] = 1 # Parametro obbligatorio per InsertAnagrafica
 
-            # Usiamo InsertAnagrafica con l'ID esistente per fare l'Update
+            # Utilizziamo InsertAnagrafica per l'aggiornamento
             soap_insert = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -117,16 +117,17 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
             
-            headers_insert = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}
-            res = requests.post(bman_url, data=soap_insert, headers=headers_insert, timeout=30)
+            h_insert = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}
+            res = requests.post(bman_url, data=soap_insert, headers=h_insert, timeout=30)
             
+            # Controllo risposta: InsertAnagrafica restituisce l'ID se ok, o un codice errore se negativo
             if res.status_code == 200 and "InsertAnagraficaResult" in res.text:
                 log_azioni.append(f"ID {art_id}: AGGIORNATO ({', '.join(campi_modificati)})")
                 prodotti_aggiornati += 1
             else:
-                log_azioni.append(f"ID {art_id}: ERRORE INVIO")
+                log_azioni.append(f"ID {art_id}: ERRORE INVIO (Verifica permessi API)")
 
     if formats:
         sheet.batch_format(formats)
     
-    return f"Sincronizzazione completata.\nAggiornati: {prodotti_aggiornati}\n\nLOG:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica rilevata."])
+    return f"Sincronizzazione completata.\nArticoli aggiornati: {prodotti_aggiornati}\n\nLOG DETTAGLIATO:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica anagrafica rilevata."])

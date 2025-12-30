@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
+    # 1. Setup Credenziali
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -25,21 +26,19 @@ def run():
     client = gspread.authorize(creds)
     
     mappatura = {
-        "ID": "ID", "codice": "Codice",
-        "opzionale1": "Brand", "opzionale2": "Titolo IT",
-        "opzionale5": "Vinted", "opzionale6": "Titolo FR",
-        "opzionale7": "Titolo EN", "opzionale8": "Titolo ES",
-        "opzionale9": "Titolo DE", "opzionale11": "Script",
+        "ID": "ID", "codice": "Codice", "opzionale1": "Brand", "opzionale2": "Titolo IT",
+        "opzionale5": "Vinted", "opzionale6": "Titolo FR", "opzionale7": "Titolo EN",
+        "opzionale8": "Titolo ES", "opzionale9": "Titolo DE", "opzionale11": "Script",
         "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
         "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
-        "opzionale16": "Descrizione DE", 
-        "przb": "Prezzo Minimo", "przc": "Prezzo", "iva": "Iva",
-        "descrizioneHtml": "Descrizione Completa",
+        "opzionale16": "Descrizione DE", "przb": "Prezzo Minimo", "przc": "Prezzo", 
+        "iva": "Iva", "descrizioneHtml": "Descrizione Completa",
         "categoria1str": "Categoria1", "categoria2str": "Categoria2"
     }
 
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     
+    # 2. Scarica dati da Bman
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -60,6 +59,7 @@ def run():
 
     sheet_rows = sheet.get_all_records()
     formats = []
+    log_azioni = []
     prodotti_aggiornati = 0
 
     for row_idx, row in enumerate(sheet_rows, start=2):
@@ -67,70 +67,81 @@ def run():
         if art_id not in bman_items: continue
         
         item_bman = bman_items[art_id]
-        dati_per_aggiornamento = item_bman.copy()
-        modificato = False
+        nuovi_dati = item_bman.copy()
+        campi_modificati = []
+        bloccato = False
         
+        # Calcolo prezzi per verifica colori
         try:
-            aliquota = float(item_bman.get("iva", 0))
-            p_netto_bman = float(item_bman.get("przc", 0))
-            p_lordo_bman = round(p_netto_bman * (1 + aliquota / 100), 2)
-            # Logica richiesta: Prezzo Minimo = Prezzo Lordo - 20%
-            p_minimo_target = round(p_lordo_bman * 0.80, 2)
+            iva = float(item_bman.get("iva", 0))
+            p_lordo_bman = round(float(item_bman.get("przc", 0)) * (1 + iva/100), 2)
+            p_min_target = round(p_lordo_bman * 0.8, 2)
         except:
-            p_lordo_bman = 0.0
-            p_minimo_target = 0.0
+            p_lordo_bman = p_min_target = 0
 
-        for col_idx, (bman_key_attr, header_name) in enumerate(mappatura.items(), start=1):
-            val_sheet_raw = str(row.get(header_name, "")).strip()
+        for col_idx, (b_key, header) in enumerate(mappatura.items(), start=1):
+            val_sheet = str(row.get(header, "")).strip()
+            val_bman = str(item_bman.get(b_key, "")).strip()
             cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
-            
-            # --- LOGICA PREZZI ---
-            if bman_key_attr == "przc":
-                val_sheet = float(val_sheet_raw.replace(',', '.')) if val_sheet_raw else 0.0
-                color = {"red": 1.0, "green": 1.0, "blue": 1.0} if val_sheet > 0 and abs(val_sheet - p_lordo_bman) < 0.01 else {"red": 1.0, "green": 0.8, "blue": 0.8}
-                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
+
+            # --- PREZZI: Solo Colore, NO Invio ---
+            if b_key in ["przc", "przb"]:
+                v_s_num = float(val_sheet.replace(',', '.')) if val_sheet else 0.0
+                target = p_lordo_bman if b_key == "przc" else p_min_target
+                if abs(v_s_num - target) > 0.01 or v_s_num == 0:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
+                else:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}})
                 continue
 
-            if bman_key_attr == "przb":
-                val_sheet = float(val_sheet_raw.replace(',', '.')) if val_sheet_raw else 0.0
-                # Verifica se il Prezzo Minimo nel foglio rispetta il -20% del Prezzo Lordo
-                color = {"red": 1.0, "green": 1.0, "blue": 1.0} if val_sheet > 0 and abs(val_sheet - p_minimo_target) < 0.01 else {"red": 1.0, "green": 0.8, "blue": 0.8}
-                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
+            # --- PROTEZIONI CHIAVE ---
+            if b_key in ["ID", "codice"]:
+                if val_sheet != val_bman:
+                    bloccato = True
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.6, "blue": 0.0}}})
+                else:
+                    formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}}})
                 continue
 
-            # --- ALTRI CAMPI E PROTEZIONI ---
-            if bman_key_attr in ["ID", "codice", "iva"]:
-                val_bman = str(item_bman.get(bman_key_attr, "")).strip()
-                color = {"red": 0.9, "green": 0.9, "blue": 0.9} if val_sheet_raw == val_bman else {"red": 1.0, "green": 0.6, "blue": 0.0}
-                formats.append({"range": cell_range, "format": {"backgroundColor": color}})
-                continue
-
-            val_bman = str(item_bman.get(bman_key_attr, "")).strip()
-            if not val_sheet_raw:
+            # --- CAMPI MODIFICABILI ---
+            if val_sheet != val_bman and val_sheet != "":
+                nuovi_dati[b_key] = val_sheet
+                campi_modificati.append(header)
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}})
+            elif not val_sheet:
                 formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}}})
-            elif val_sheet_raw != val_bman:
-                dati_per_aggiornamento[bman_key_attr] = val_sheet_raw
-                modificato = True
-                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
             else:
-                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}}})
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}})
 
-        if modificato:
-            dati_per_aggiornamento.pop('przc', None)
-            dati_per_aggiornamento.pop('przb', None)
+        # --- ESECUZIONE INVIO ---
+        if bloccato:
+            log_azioni.append(f"ID {art_id}: BLOCCATO (ID/Codice manomessi)")
+        elif campi_modificati:
+            # Rimuoviamo i prezzi prima dell'invio come richiesto
+            nuovi_dati.pop('przc', None)
+            nuovi_dati.pop('przb', None)
+            
             soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <setAnagrafica xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <anagrafica><![CDATA[{json.dumps(dati_per_aggiornamento)}]]></anagrafica>
+      <anagrafica><![CDATA[{json.dumps(nuovi_dati)}]]></anagrafica>
     </setAnagrafica>
   </soap:Body>
 </soap:Envelope>"""
-            requests.post(bman_url, data=soap_body_set, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}, timeout=30)
-            prodotti_aggiornati += 1
+            
+            h = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}
+            res = requests.post(bman_url, data=soap_body_set, headers=h, timeout=30)
+            
+            if res.status_code == 200:
+                log_azioni.append(f"ID {art_id}: AGGIORNATO (Campi: {', '.join(campi_modificati)})")
+                prodotti_aggiornati += 1
+            else:
+                log_azioni.append(f"ID {art_id}: ERRORE SERVER BMAN")
 
     if formats:
         sheet.batch_format(formats)
     
-    return f"Verifica completata. Aggiornati {prodotti_aggiornati} articoli. Prezzo Minimo validato come -20% del lordo."
+    res_msg = f"Sincronizzazione completata.\nProdotti aggiornati: {prodotti_aggiornati}\n\nDETTAGLIO AZIONI:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica rilevata nei campi anagrafici."])
+    return res_msg

@@ -3,7 +3,13 @@ import requests
 import json
 import gspread
 import xml.etree.ElementTree as ET
+import re
 from oauth2client.service_account import ServiceAccountCredentials
+
+def clean_text(text):
+    if not text: return ""
+    text = str(text).lower().strip()
+    return re.sub(r'(^|[.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
 
 def run():
     bman_key = os.environ.get("BMAN_API_KEY")
@@ -19,40 +25,29 @@ def run():
         "client_id": "12345",
         "token_uri": "https://oauth2.googleapis.com/token"
     }
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"])
     client = gspread.authorize(creds)
+    sheet = client.open_by_key(sheet_id).get_worksheet(0)
     
-    # Mappatura senza descrizioneHtml
+    # Categorie escluse per non aggiornarle mai su bMan
     mappatura = {
-        "ID": "ID", "codice": "Codice",
         "opzionale1": "Brand", "opzionale2": "Titolo IT",
         "opzionale5": "Vinted", "opzionale6": "Titolo FR",
         "opzionale7": "Titolo EN", "opzionale8": "Titolo ES",
         "opzionale9": "Titolo DE", "opzionale11": "Script",
         "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
         "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
-        "opzionale16": "Descrizione DE", 
-        "przb": "Prezzo Minimo", "przc": "Prezzo", "iva": "Iva",
-        "strCategoria1": "Categoria1", "strCategoria2": "Categoria2"
+        "opzionale16": "Descrizione DE"
     }
 
-    sheet = client.open_by_key(sheet_id).get_worksheet(0)
-    
-    # Recupero dati Bman per confronto
-    filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
-    soap_get = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><getAnagrafiche xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><filtri><![CDATA[{json.dumps(filtri)}]]></filtri><numeroPagina>1</numeroPagina><listaDepositi><![CDATA[[1]]]></listaDepositi></getAnagrafiche></soap:Body></soap:Envelope>"""
-    h_get = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
-    resp = requests.post(bman_url, data=soap_get, headers=h_get, timeout=60)
-    tree = ET.fromstring(resp.content)
-    res_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
-    bman_items = {str(i['ID']): i for i in json.loads(res_node.text)} if res_node is not None else {}
+    soap_get = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><getAnagrafiche xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><filtri><![CDATA[{json.dumps([{"chiave": "opzionale11", "operatore": "=", "valore": "si"}])}]]></filtri><numeroPagina>1</numeroPagina><listaDepositi><![CDATA[[1]]]></listaDepositi></getAnagrafiche></soap:Body></soap:Envelope>"""
+    resp = requests.post(bman_url, data=soap_get, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}, timeout=60)
+    bman_items = {str(i['ID']): i for i in json.loads(ET.fromstring(resp.content).find('.//{http://cloud.bman.it/}getAnagraficheResult').text)}
 
     sheet_rows = sheet.get_all_records()
-    log_azioni = []
     prodotti_aggiornati = 0
 
-    for row_idx, row in enumerate(sheet_rows, start=2):
+    for row in sheet_rows:
         art_id = str(row.get("ID")).strip()
         if art_id not in bman_items: continue
         
@@ -61,32 +56,28 @@ def run():
         campi_modificati = []
         
         for b_key, header in mappatura.items():
-            if b_key in ["ID", "codice", "iva", "przc", "przb"]: continue
-            
             val_s = str(row.get(header, "")).strip()
-            val_b_raw = item_bman.get(b_key)
-            if val_b_raw is None and "Categoria" in header:
-                val_b_raw = item_bman.get(b_key.replace("strCategoria", "categoria") + "str")
-            val_b = str(val_b_raw if val_b_raw is not None else "").strip()
             
-            if "Categoria" in header or header == "Brand":
-                val_s, val_b = val_s.upper(), val_b.upper()
-
+            # Normalizzazione basata sul tipo di campo
+            if header == "Brand":
+                val_s = val_s.upper()
+            elif "Titolo" in header or "Descrizione" in header:
+                val_s = clean_text(val_s)
+            
+            val_b = str(item_bman.get(b_key, "")).strip()
+            
             if val_s != val_b and val_s != "":
                 nuovi_dati[b_key] = val_s
                 campi_modificati.append(header)
 
         if campi_modificati:
+            # Upsert con InsertAnagrafica
             nuovi_dati.pop('przc', None)
             nuovi_dati.pop('przb', None)
             nuovi_dati["IDDeposito"] = 1
-
-            soap_insert = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><InsertAnagrafica xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><anagrafica><![CDATA[{json.dumps(nuovi_dati)}]]></anagrafica></InsertAnagrafica></soap:Body></soap:Envelope>"""
-            h_insert = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}
-            res = requests.post(bman_url, data=soap_insert, headers=h_insert, timeout=30)
             
-            if res.status_code == 200 and "InsertAnagraficaResult" in res.text:
-                log_azioni.append(f"ID {art_id}: AGGIORNATO ({', '.join(campi_modificati)})")
-                prodotti_aggiornati += 1
+            soap_insert = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><InsertAnagrafica xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><anagrafica><![CDATA[{json.dumps(nuovi_dati)}]]></anagrafica></InsertAnagrafica></soap:Body></soap:Envelope>"""
+            requests.post(bman_url, data=soap_insert, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}, timeout=30)
+            prodotti_aggiornati += 1
 
-    return f"Sincronizzazione completata.\nAggiornati: {prodotti_aggiornati}\n\nLOG:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica rilevata."])
+    return f"Aggiornamento completato. Titoli e Descrizioni normalizzati. Prodotti: {prodotti_aggiornati}"

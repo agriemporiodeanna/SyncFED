@@ -116,3 +116,9 @@ def run():
         return f"✅ Sincronizzazione completata: {len(articoli_finali)-1} articoli totali (scansionate {pagina-1} pagine)."
     else:
         return "⚠ Nessun articolo trovato con Script='si' in tutto il catalogo."
+    
+    if len(articoli_finali) > 1:
+        sheet.update('A1', articoli_finali)
+        return f"✅ Sincronizzazione completata: {len(articoli_finali)-1} articoli totali (scansionate {pagina-1} pagine)."
+    else:
+        return "⚠ Nessun articolo trovato con Script='si' in tutto il catalogo."

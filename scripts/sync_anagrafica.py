@@ -7,7 +7,6 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
-    # 1. Configurazione Iniziale
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -41,7 +40,7 @@ def run():
 
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     
-    # 2. Recupero dati correnti da Bman per confronto
+    # 1. Recupero dati Bman
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_get = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -55,8 +54,8 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
     
-    h_get = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
-    resp = requests.post(bman_url, data=soap_get, headers=h_get, timeout=60)
+    headers_get = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
+    resp = requests.post(bman_url, data=soap_get, headers=headers_get, timeout=60)
     tree = ET.fromstring(resp.content)
     res_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
     bman_items = {str(i['ID']): i for i in json.loads(res_node.text)} if res_node is not None else {}
@@ -66,8 +65,6 @@ def run():
     log_azioni = []
     prodotti_aggiornati = 0
 
-    # 
-
     for row_idx, row in enumerate(sheet_rows, start=2):
         art_id = str(row.get("ID")).strip()
         if art_id not in bman_items: continue
@@ -76,37 +73,44 @@ def run():
         nuovi_dati = item_bman.copy()
         campi_modificati = []
         
-        # Verifica Prezzi e IVA (Sola Lettura)
+        # --- VERIFICA PREZZI (SOLA LETTURA) ---
         try:
-            iva_val = float(item_bman.get("iva", 0))
-            p_lordo_bman = round(float(item_bman.get("przc", 0)) * (1 + iva_val/100), 2)
-            p_min_target = round(p_lordo_bman * 0.8, 2)
+            iva_v = float(item_bman.get("iva", 0))
+            p_lordo = round(float(item_bman.get("przc", 0)) * (1 + iva_v/100), 2)
+            p_min_t = round(p_lordo * 0.8, 2)
+            val_p_min = float(str(row.get("Prezzo Minimo")).replace(',', '.'))
+            val_p_max = float(str(row.get("Prezzo")).replace(',', '.'))
             
-            val_przb_sheet = float(str(row.get("Prezzo Minimo")).replace(',', '.'))
-            val_przc_sheet = float(str(row.get("Prezzo")).replace(',', '.'))
-            
-            formats.append({"range": f"P{row_idx}", "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1} if abs(val_przb_sheet - p_min_target) < 0.01 else {"red": 1, "green": 0.8, "blue": 0.8}}})
-            formats.append({"range": f"Q{row_idx}", "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1} if abs(val_przc_sheet - p_lordo_bman) < 0.01 else {"red": 1, "green": 0.8, "blue": 0.8}}})
+            formats.append({"range": f"P{row_idx}", "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1} if abs(val_p_min - p_min_t) < 0.01 else {"red": 1, "green": 0.8, "blue": 0.8}}})
+            formats.append({"range": f"Q{row_idx}", "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1} if abs(val_p_max - p_lordo) < 0.01 else {"red": 1, "green": 0.8, "blue": 0.8}}})
         except: pass
 
-        # Identificazione campi modificati dall'utente
+        # --- CONFRONTO CON FORZATURA MAIUSCOLO PER BRAND E CATEGORIE ---
         for b_key, header in mappatura.items():
             if b_key in ["ID", "codice", "iva", "przc", "przb"]: continue
             
             val_s = str(row.get(header, "")).strip()
-            val_b = str(item_bman.get(b_key, "")).strip()
             
+            # Recupero valore Bman con gestione fallback nomi categoria
+            val_b_raw = item_bman.get(b_key)
+            if val_b_raw is None and "Categoria" in header:
+                val_b_raw = item_bman.get(b_key.replace("strCategoria", "categoria") + "str")
+            val_b = str(val_b_raw if val_b_raw is not None else "").strip()
+            
+            # Se è una categoria o il Brand, forziamo il maiuscolo per il confronto e l'invio
+            if "Categoria" in header or header == "Brand":
+                val_s = val_s.upper()
+                val_b = val_b.upper()
+
             if val_s != val_b and val_s != "":
                 nuovi_dati[b_key] = val_s
                 campi_modificati.append(header)
 
         if campi_modificati:
-            # Rimuoviamo i prezzi dall'invio come richiesto
             nuovi_dati.pop('przc', None)
             nuovi_dati.pop('przb', None)
-            nuovi_dati["IDDeposito"] = 1 # Parametro obbligatorio per InsertAnagrafica
+            nuovi_dati["IDDeposito"] = 1 # Parametro obbligatorio
 
-            # Utilizziamo InsertAnagrafica per l'aggiornamento
             soap_insert = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -117,17 +121,16 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
             
-            h_insert = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}
-            res = requests.post(bman_url, data=soap_insert, headers=h_insert, timeout=30)
+            headers_insert = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}
+            res = requests.post(bman_url, data=soap_insert, headers=headers_insert, timeout=30)
             
-            # Controllo risposta: InsertAnagrafica restituisce l'ID se ok, o un codice errore se negativo
             if res.status_code == 200 and "InsertAnagraficaResult" in res.text:
                 log_azioni.append(f"ID {art_id}: AGGIORNATO ({', '.join(campi_modificati)})")
                 prodotti_aggiornati += 1
             else:
-                log_azioni.append(f"ID {art_id}: ERRORE INVIO (Verifica permessi API)")
+                log_azioni.append(f"ID {art_id}: ERRORE INVIO")
 
     if formats:
         sheet.batch_format(formats)
     
-    return f"Sincronizzazione completata.\nArticoli aggiornati: {prodotti_aggiornati}\n\nLOG DETTAGLIATO:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica anagrafica rilevata."])
+    return f"Sincronizzazione completata.\nAggiornati: {prodotti_aggiornati}\n\nLOG:\n" + "\n".join(log_azioni if log_azioni else ["Nessuna modifica rilevata."])

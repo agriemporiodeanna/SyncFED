@@ -18,7 +18,7 @@ def run():
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
-    # 2. Setup Google Sheets con workaround per campi mancanti
+    # 2. Setup Google Sheets con workaround per i campi 'private_key_id' e 'client_id'
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -48,13 +48,14 @@ def run():
     }
 
     articoli_finali = []
-    intestazioni = list(mappatura.values())[0:2] + ["Foto1", "Foto2", "Foto3", "Foto4", "Foto5"] + list(mappatura.values())[2:]
+    # Costruzione intestazioni: ID, Codice, Foto1..5, e poi il resto
+    intestazioni = ["ID", "Codice", "Foto1", "Foto2", "Foto3", "Foto4", "Foto5"] + list(mappatura.values())[2:]
     articoli_finali.append(intestazioni)
 
     pagina = 1
     
     while True:
-        # Chiamata SOAP getAnagrafiche
+        # Chiamata SOAP getAnagrafiche senza filtri per massimizzare la compatibilità
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
@@ -70,46 +71,52 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
 
-        headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
+        headers = {
+            'Content-Type': 'text/xml; charset=utf-8', 
+            'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
+        }
+        
         response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
         
+        # Parsing della risposta XML
         tree = ET.fromstring(response.content)
         result_node = tree.find('.//{{http://cloud.bman.it/}}getAnagraficheResult')
         
         if result_node is None or not result_node.text: break
         data = json.loads(result_node.text)
-        if not data: break
+        if not data or len(data) == 0: break
             
         for art in data:
-            # Filtro: Script deve essere "si"
-            if str(art.get("opzionale11", "")).strip().lower() == "si":
+            # Filtro lato Python: verifica che Script sia "si" o "Approvato"
+            val_script = str(art.get("opzionale11", "")).strip().lower()
+            if val_script in ["si", "approvato"]:
                 riga = []
-                # ID e Codice
                 riga.append(safe_str(art.get("ID")))
                 riga.append(safe_str(art.get("codice")))
                 
-                # Estrazione Foto (Foto1-Foto5)
+                # Estrazione URL Foto (Foto1-Foto5) dal campo arrFoto
                 fotos = art.get("arrFoto", [])
                 for i in range(5):
                     url_f = fotos[i].get("url", "") if i < len(fotos) else ""
                     riga.append(url_f)
                 
-                # Resto dei campi mappati
-                for campo_bman in list(mappatura.keys())[2:]:
+                # Resto dei campi mappati (saltando ID e Codice già inseriti)
+                chiavi_mappate = list(mappatura.keys())
+                for campo_bman in chiavi_mappate[2:]:
                     riga.append(safe_str(art.get(campo_bman)))
                 
                 articoli_finali.append(riga)
 
         pagina += 1
-        time.sleep(0.2)
-        if pagina > 100: break # Limite sicurezza
+        time.sleep(0.2) # Rispetto del limite 5 req/sec
+        if pagina > 50: break # Limite di sicurezza per il test
 
-    # 4. Aggiornamento Foglio
+    # 4. Aggiornamento Foglio Google
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     
     if len(articoli_finali) > 1:
         sheet.update('A1', articoli_finali)
-        return f"Sincronizzazione completata: {len(articoli_finali)-1} prodotti con Script='si' esportati."
+        return f"Sincronizzazione completata: {len(articoli_finali)-1} prodotti esportati correttamente."
     else:
-        return "Nessun prodotto trovato con Script='si'. Verifica i dati su Bman."
+        return "Nessun prodotto trovato con Script='si' nel catalogo scaricato."

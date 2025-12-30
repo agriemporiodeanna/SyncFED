@@ -19,13 +19,12 @@
         .btn-sync { background-color: #4285f4; }
         .btn-sync:hover { background-color: #357ae8; }
 
-        /* Stile specifico per il Pulsante 4 */
         .btn-ana { background-color: #673ab7; }
         .btn-ana:hover { background-color: #5e35b1; }
         
         button:disabled { background-color: #bdc3c7; cursor: not-allowed; opacity: 0.7; }
         
-        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; min-height: 20px; }
+        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; min-height: 20px; text-align: left; white-space: pre-wrap; }
         .loading { display: block !important; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; }
         .success { display: block !important; color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
         .error { display: block !important; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
@@ -61,10 +60,9 @@
             const statusDiv = document.getElementById('status');
             const allBtns = document.querySelectorAll('.btn');
             
-            // Reset e caricamento
             allBtns.forEach(b => b.disabled = true);
             statusDiv.className = 'loading';
-            statusDiv.innerText = "Elaborazione in corso...";
+            statusDiv.innerText = "Elaborazione in corso... Attendere completamento.";
 
             try {
                 const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
@@ -74,11 +72,13 @@
                     statusDiv.className = 'success';
                     statusDiv.innerText = data.message;
                 } else {
-                    throw new Error(data.message);
+                    // Se l'API restituisce 'details', mostriamoli nel log
+                    const errorMsg = data.details ? `${data.message}\n\nDettagli:\n${data.details}` : data.message;
+                    throw new Error(errorMsg);
                 }
             } catch (error) {
                 statusDiv.className = 'error';
-                statusDiv.innerText = "Errore: " + error.message;
+                statusDiv.innerText = error.message;
             } finally {
                 allBtns.forEach(b => b.disabled = false);
             }

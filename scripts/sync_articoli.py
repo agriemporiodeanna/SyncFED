@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
+    # 1. Configurazione
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -22,21 +23,9 @@ def run():
     }
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    
-    mappatura = {
-        "ID": "ID", "codice": "Codice",
-        "opzionale1": "Brand", "opzionale2": "Titolo IT",
-        "opzionale5": "Vinted", "opzionale6": "Titolo FR",
-        "opzionale7": "Titolo EN", "opzionale8": "Titolo ES",
-        "opzionale9": "Titolo DE", "opzionale11": "Script",
-        "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
-        "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
-        "opzionale16": "Descrizione DE", 
-        "przb": "Prezzo Minimo", "przc": "Prezzo", "iva": "Iva",
-        "descrizioneHtml": "Descrizione Completa",
-        "categoria1str": "Categoria1", "categoria2str": "Categoria2"
-    }
+    sheet = client.open_by_key(sheet_id).get_worksheet(0)
 
+    # 2. Richiesta dati a bMan
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -50,37 +39,62 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
     
-    resp = requests.post(bman_url, data=soap_body, headers={'Content-Type': 'text/xml'}, timeout=60)
+    headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
+    resp = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
     tree = ET.fromstring(resp.content)
     result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
-    articoli_bman = json.loads(result_text) if result_text else []
-
-    righe_da_scrivere = [list(mappatura.values())]
     
-    for art in articoli_bman:
-        riga = []
-        try:
-            aliquota = float(art.get("iva", 0))
-            prezzo_netto = float(art.get("przc", 0))
-            prezzo_lordo = round(prezzo_netto * (1 + aliquota / 100), 2)
-            # Calcolo Prezzo Minimo: Prezzo Lordo - 20%
-            prezzo_minimo_lordo = round(prezzo_lordo * 0.80, 2)
-        except:
-            prezzo_lordo = 0.0
-            prezzo_minimo_lordo = 0.0
+    if not result_text:
+        return "Nessun dato ricevuto da bMan."
 
-        for b_key in mappatura.keys():
-            if b_key == "przc":
-                valore = prezzo_lordo
-            elif b_key == "przb":
-                valore = prezzo_minimo_lordo
-            else:
-                valore = art.get(b_key, "")
-            riga.append(valore)
-        righe_da_scrivere.append(riga)
+    articoli = json.loads(result_text)
+    
+    # 3. Preparazione dati per lo Sheet con forzatura MAIUSCOLO
+    data_to_write = []
+    for art in articoli:
+        iva = float(art.get("iva", 0))
+        prezzo_netto = float(art.get("przc", 0))
+        prezzo_lordo = round(prezzo_netto * (1 + iva/100), 2)
+        prezzo_minimo = round(prezzo_lordo * 0.8, 2)
 
-    sheet = client.open_by_key(sheet_id).get_worksheet(0)
+        row = [
+            art.get("ID", ""),
+            art.get("codice", ""),
+            str(art.get("opzionale1", "")).upper(),      # Brand -> MAIUSCOLO
+            art.get("opzionale2", ""),                  # Titolo IT
+            art.get("opzionale5", ""),                  # Vinted
+            art.get("opzionale6", ""),                  # Titolo FR
+            art.get("opzionale7", ""),                  # Titolo EN
+            art.get("opzionale8", ""),                  # Titolo ES
+            art.get("opzionale9", ""),                  # Titolo DE
+            art.get("opzionale11", ""),                 # Script
+            art.get("opzionale12", ""),                 # Descrizione IT
+            art.get("opzionale13", ""),                 # Descrizione FR
+            art.get("opzionale14", ""),                 # Descrizione EN
+            art.get("opzionale15", ""),                 # Descrizione ES
+            art.get("opzionale16", ""),                 # Descrizione DE
+            prezzo_minimo,
+            prezzo_lordo,
+            art.get("iva", ""),
+            art.get("descrizioneHtml", ""),
+            str(art.get("categoria1str", "")).upper(),  # Categoria 1 -> MAIUSCOLO
+            str(art.get("categoria2str", "")).upper()   # Categoria 2 -> MAIUSCOLO
+        ]
+        data_to_write.append(row)
+
+    # 4. Scrittura sul foglio (mantenendo l'intestazione)
+    header = [
+        "ID", "Codice", "Brand", "Titolo IT", "Vinted", "Titolo FR", "Titolo EN", 
+        "Titolo ES", "Titolo DE", "Script", "Descrizione IT", "Descrizione FR", 
+        "Descrizione EN", "Descrizione ES", "Descrizione DE", "Prezzo Minimo", 
+        "Prezzo", "Iva", "Descrizione Completa", "Categoria1", "Categoria2"
+    ]
+    
     sheet.clear()
-    sheet.update('A1', righe_da_scrivere)
+    sheet.update('A1', [header] + data_to_write)
     
-    return f"Scaricate {len(articoli_bman)} anagrafiche. Prezzo Minimo calcolato come Prezzo Lordo -20%."
+    # Applichiamo una formattazione di base (Sfondo grigio per colonne protette)
+    sheet.format("A:B", {"backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
+    sheet.format("R", {"backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
+
+    return f"Scaricate {len(articoli)} anagrafiche. Brand e Categorie normalizzate in MAIUSCOLO."

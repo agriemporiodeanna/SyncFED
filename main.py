@@ -26,9 +26,10 @@ def handle_api(action):
         return jsonify({"status": "success", "message": msg})
     
     except Exception as e:
-        print(f"ERRORE API {action}: {str(e)}")
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # Recupera l'errore completo con i dettagli di Google
+        full_error = traceback.format_exc()
+        print(f"ERRORE DETTAGLIATO:\n{full_error}")
+        return jsonify({"status": "error", "message": f"Errore: {str(e)}", "details": full_error}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))

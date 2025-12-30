@@ -6,19 +6,24 @@ import time
 import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
+def normalize_value(value):
+    """Replica esattamente la tua funzione JS: toglie spazi e rende minuscolo."""
+    if value is None: return ""
+    return str(value).strip().lower()
+
 def clean_for_sheets(value):
-    """Formatta i dati per Google Sheets evitando errori di tipo."""
+    """Prepara i dati per Google Sheets."""
     if value is None: return ""
     if isinstance(value, (dict, list)): return json.dumps(value)
     return str(value)
 
 def run():
-    # 1. Recupero Variabili Ambiente
+    # 1. Recupero ENV
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
-    # 2. Configurazione Google
+    # 2. Setup Google
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
@@ -32,7 +37,7 @@ def run():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # 3. Mappatura Campi (Bman -> Google Sheet)
+    # 3. Mappatura Campi
     mappatura = {
         "ID": "ID", "codice": "Codice",
         "opzionale1": "Brand", "opzionale2": "Titolo IT",
@@ -48,13 +53,12 @@ def run():
     }
 
     articoli_finali = []
-    # Header basato sulla mappatura (senza colonne foto)
-    header = list(mappatura.values())
-    articoli_finali.append(header)
+    articoli_finali.append(list(mappatura.values()))
 
     pagina = 1
+    totale_ricevuti = 0
     
-    # 4. Ciclo di scaricamento massivo
+    # 4. STEP 2 – SCRIPT = SI (OK)
     while True:
         soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -71,40 +75,41 @@ def run():
   </soap:Body>
 </soap:Envelope>"""
 
-        headers = {
-            'Content-Type': 'text/xml; charset=utf-8', 
-            'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
-        }
-        
+        headers = {'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}
         response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
         
-        # Parsing XML
         tree = ET.fromstring(response.content)
         result_node = tree.find('.//{{http://cloud.bman.it/}}getAnagraficheResult')
         
         if result_node is None or not result_node.text: break
-        data = json.loads(result_node.text)
-        if not data: break
+        
+        articoli_pagina = json.loads(result_node.text)
+        if not articoli_pagina: break
             
-        for art in data:
-            # FILTRO: Verifica che Script (opzionale11) sia "si"
-            val_script = str(art.get("opzionale11", "")).strip().lower()
-            if val_script == "si":
-                riga = []
-                # Estrae solo i campi mappati
-                for campo_bman in mappatura.keys():
-                    riga.append(clean_for_sheets(art.get(campo_bman)))
-                
+        totale_ricevuti += len(articoli_pagina)
+        
+        for a in articoli_pagina:
+            # Replica esatta del filtro JS
+            if normalize_value(a.get("opzionale11")) == 'si':
+                riga = [clean_for_sheets(a.get(campo)) for campo in mappatura.keys()]
                 articoli_finali.append(riga)
 
         pagina += 1
-        time.sleep(0.2) # Rispetto limite 5 req/sec
-        if pagina > 100: break # Sicurezza timeout
+        time.sleep(0.2)
+        if pagina > 100: break # Limite sicurezza
 
-    # 5. Aggiornamento Google Sheet
+    # 5. Output
+    print(f"📦 Articoli ricevuti: {totale_ricevuti}")
+    print(f"✅ Articoli Script=SI: {len(articoli_finali)-1}")
+
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     
+    if len(articoli_finali) > 1:
+        sheet.update('A1', articoli_finali)
+        return f"Sincronizzazione completata: {len(articoli_finali)-1} articoli su {totale_ricevuti} totali."
+    else:
+        return f"Analizzati {totale_ricevuti} prodotti, ma nessuno ha Script='si'."
     if len(articoli_finali) > 1:
         sheet.update('A1', articoli_finali)
         return f"Sincronizzazione completata! {len(articoli_finali)-1} articoli con Script='si' importati."

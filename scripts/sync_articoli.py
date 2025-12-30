@@ -2,82 +2,111 @@ import os
 import requests
 import json
 import gspread
+import time
 import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def clean_for_sheets(value):
-    """Converte valori complessi in stringhe per Google Sheets"""
-    if value is None:
-        return ""
-    if isinstance(value, (dict, list)):
-        return json.dumps(value) # Converte liste/dizionari in testo JSON
-    return value
+    """Formatta i dati per Google Sheets evitando errori di tipo."""
+    if value is None: return ""
+    if isinstance(value, (dict, list)): return json.dumps(value)
+    return str(value)
 
 def run():
+    # 1. Recupero Variabili Ambiente
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = os.environ.get("BMAN_BASE_URL")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
+    # 2. Configurazione Google
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID", "sync-project"),
-        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "1234567890"),
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "12345"),
         "private_key": os.environ.get("GOOGLE_PRIVATE_KEY").replace('\\n', '\n'),
         "client_email": os.environ.get("GOOGLE_CLIENT_EMAIL"),
-        "client_id": "1234567890",
+        "client_id": "12345",
         "token_uri": "https://oauth2.googleapis.com/token"
     }
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
+    # 3. Mappatura Campi (Bman -> Google Sheet)
+    mappatura = {
+        "ID": "ID", "codice": "Codice",
+        "opzionale1": "Brand", "opzionale2": "Titolo IT",
+        "opzionale5": "Vinted", "opzionale6": "Titolo FR",
+        "opzionale7": "Titolo EN", "opzionale8": "Titolo ES",
+        "opzionale9": "Titolo DE", "opzionale11": "Script",
+        "opzionale12": "Descrizione IT", "opzionale13": "Descrizione FR",
+        "opzionale14": "Descrizione EN", "opzionale15": "Descrizione ES",
+        "opzionale16": "Descrizione DE", "przb": "Prezzo Minimo",
+        "przc": "Prezzo", "iva": "Iva",
+        "descrizioneHtml": "Descrizione Completa",
+        "categoria1str": "Categoria1", "categoria2str": "Categoria2"
+    }
+
+    articoli_finali = []
+    # Header basato sulla mappatura (senza colonne foto)
+    header = list(mappatura.values())
+    articoli_finali.append(header)
+
+    pagina = 1
     
-    soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
+    # 4. Ciclo di scaricamento massivo
+    while True:
+        soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>{bman_key}</chiave>
-      <filtri><![CDATA[{json.dumps(filtri)}]]></filtri>
+      <filtri><![CDATA[[]]]></filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
-      <numeroPagina>1</numeroPagina>
-      <listaDepositi><![CDATA[[1]]]></listaDepositi>
+      <numeroPagina>{pagina}</numeroPagina>
+      <listaDepositi><![CDATA[[]]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>"""
 
-    headers = {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
-    }
-
-    response = requests.post(bman_url, data=soap_body, headers=headers, timeout=30)
-    tree = ET.fromstring(response.content)
-    result_node = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult')
-    
-    if result_node is None or not result_node.text:
-        raise Exception("Nessun dato ricevuto da Bman")
+        headers = {
+            'Content-Type': 'text/xml; charset=utf-8', 
+            'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
+        }
         
-    data = json.loads(result_node.text) #
-    
-    if not data:
-        return "Articolo non trovato."
+        response = requests.post(bman_url, data=soap_body, headers=headers, timeout=60)
+        
+        # Parsing XML
+        tree = ET.fromstring(response.content)
+        result_node = tree.find('.//{{http://cloud.bman.it/}}getAnagraficheResult')
+        
+        if result_node is None or not result_node.text: break
+        data = json.loads(result_node.text)
+        if not data: break
+            
+        for art in data:
+            # FILTRO: Verifica che Script (opzionale11) sia "si"
+            val_script = str(art.get("opzionale11", "")).strip().lower()
+            if val_script == "si":
+                riga = []
+                # Estrae solo i campi mappati
+                for campo_bman in mappatura.keys():
+                    riga.append(clean_for_sheets(art.get(campo_bman)))
+                
+                articoli_finali.append(riga)
 
-    primo_articolo = data[0]
-    
-    # 1. Crea le intestazioni (sempre stringhe)
-    intestazioni = list(primo_articolo.keys())
-    
-    # 2. Pulisce i valori per Google Sheets
-    valori_puliti = [clean_for_sheets(v) for v in primo_articolo.values()]
-    
+        pagina += 1
+        time.sleep(0.2) # Rispetto limite 5 req/sec
+        if pagina > 100: break # Sicurezza timeout
+
+    # 5. Aggiornamento Google Sheet
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
     sheet.clear()
     
-    # Invia i dati come matrice (lista di liste)
-    sheet.update('A1', [intestazioni, valori_puliti])
-    
-    return f"Successo! Articolo {primo_articolo.get('codice')} caricato correttamente."
-
+    if len(articoli_finali) > 1:
+        sheet.update('A1', articoli_finali)
+        return f"Sincronizzazione completata! {len(articoli_finali)-1} articoli con Script='si' importati."
+    else:
+        return "Nessun prodotto trovato con Script='si' nel catalogo Bman."

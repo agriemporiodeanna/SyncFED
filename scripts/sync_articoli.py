@@ -1,11 +1,9 @@
-import os
-import requests
-import json
-import gspread
+import os, requests, json, gspread
 import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
+    # 1. Configurazione credenziali e accesso al foglio
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
@@ -24,6 +22,7 @@ def run():
     client = gspread.authorize(creds)
     sheet = client.open_by_key(sheet_id).get_worksheet(0)
 
+    # 2. Recupero dati da bMan 
     filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
     soap_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -42,9 +41,10 @@ def run():
     tree = ET.fromstring(resp.content)
     result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
     
-    if not result_text: return "Nessun dato."
+    if not result_text: return "Nessun dato ricevuto da bMan."
     articoli = json.loads(result_text)
     
+    # 3. Preparazione dati (Nessuna normalizzazione di testo applicata)
     data_to_write = []
     for art in articoli:
         iva = float(art.get("iva", 0))
@@ -54,7 +54,7 @@ def run():
         row = [
             art.get("ID", ""),
             art.get("codice", ""),
-            str(art.get("opzionale1", "")).upper(),      # Brand
+            art.get("opzionale1", ""),                  # Brand
             art.get("opzionale2", ""),                  # Titolo IT
             art.get("opzionale5", ""),                  # Vinted
             art.get("opzionale6", ""),                  # Titolo FR
@@ -70,21 +70,14 @@ def run():
             prezzo_minimo,
             prezzo_lordo,
             art.get("iva", ""),
-            str(art.get("categoria1str", "")).upper(),  # Categoria 1
-            str(art.get("categoria2str", "")).upper()   # Categoria 2
+            art.get("categoria1str", ""),               # Categoria 1
+            art.get("categoria2str", "")                # Categoria 2
         ]
         data_to_write.append(row)
 
-    header = [
-        "ID", "Codice", "Brand", "Titolo IT", "Vinted", "Titolo FR", "Titolo EN", 
-        "Titolo ES", "Titolo DE", "Script", "Descrizione IT", "Descrizione FR", 
-        "Descrizione EN", "Descrizione ES", "Descrizione DE", "Prezzo Minimo", 
-        "Prezzo", "Iva", "Categoria1", "Categoria2"
-    ]
-    
+    # 4. Scrittura sul foglio
+    header = ["ID", "Codice", "Brand", "Titolo IT", "Vinted", "Titolo FR", "Titolo EN", "Titolo ES", "Titolo DE", "Script", "Descrizione IT", "Descrizione FR", "Descrizione EN", "Descrizione ES", "Descrizione DE", "Prezzo Minimo", "Prezzo", "Iva", "Categoria1", "Categoria2"]
     sheet.clear()
     sheet.update('A1', [header] + data_to_write)
-    sheet.format("A:B", {"backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
-    sheet.format("R", {"backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95}})
-
-    return f"Scaricate {len(articoli)} anagrafiche (Senza Descrizione Completa)."
+    
+    return f"Scaricate {len(articoli)} anagrafiche. Dati ripristinati senza normalizzazione."

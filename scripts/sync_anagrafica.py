@@ -1,82 +1,131 @@
-import os, requests, json, gspread
+import os
+import requests
+import json
+import gspread
+import time
 import xml.etree.ElementTree as ET
 from oauth2client.service_account import ServiceAccountCredentials
 
 def run():
+    # 1. Setup Credenziali
     bman_key = os.environ.get("BMAN_API_KEY")
     bman_url = "https://emporiodeanna.bman.it/bmanapi.asmx"
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = {
         "type": "service_account",
         "project_id": os.environ.get("GOOGLE_PROJECT_ID"),
-        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID"),
+        "private_key_id": os.environ.get("GOOGLE_PRIVATE_KEY_ID", "12345"),
         "private_key": os.environ.get("GOOGLE_PRIVATE_KEY").replace('\\n', '\n'),
         "client_email": os.environ.get("GOOGLE_CLIENT_EMAIL"),
         "client_id": "12345",
         "token_uri": "https://oauth2.googleapis.com/token"
     }
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(sheet_id).get_worksheet(0)
     
-    # Mappatura originale
+    # Mappatura Campi Articoli (Anagrafica Prodotti)
     mappatura = {
-        "opzionale1": "Brand", "opzionale2": "Titolo IT", "opzionale5": "Vinted",
-        "opzionale6": "Titolo FR", "opzionale7": "Titolo EN", "opzionale8": "Titolo ES",
-        "opzionale9": "Titolo DE", "opzionale11": "Script", "opzionale12": "Descrizione IT",
-        "opzionale13": "Descrizione FR", "opzionale14": "Descrizione EN",
-        "opzionale15": "Descrizione ES", "opzionale16": "Descrizione DE"
+        "ID": "ID Contatto",
+        "codice": "Codice",
+        "opzionale1": "Brand",
+        "opzionale2": "Titolo IT",
+        "opzionale6": "Titolo FR",
+        "opzionale12": "Descrizione IT"
     }
 
-    # 1. Recupero dati attuali bMan
-    filtri = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
-    soap_get = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><getAnagrafiche xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><filtri><![CDATA[{json.dumps(filtri)}]]></filtri><numeroPagina>1</numeroPagina><listaDepositi><![CDATA[[1]]]></listaDepositi></getAnagrafiche></soap:Body></soap:Envelope>"""
-    resp_get = requests.post(bman_url, data=soap_get, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}, timeout=60)
-    bman_items = {str(i['ID']): i for i in json.loads(ET.fromstring(resp_get.content).find('.//{http://cloud.bman.it/}getAnagraficheResult').text)}
+    workbook = client.open_by_key(sheet_id)
+    try:
+        sheet = workbook.get_worksheet(1)
+        if not sheet: sheet = workbook.add_worksheet(title="Anagrafica", rows="100", cols="10")
+    except:
+        sheet = workbook.add_worksheet(title="Anagrafica", rows="100", cols="10")
 
-    sheet_rows = sheet.get_all_records()
-    prodotti_aggiornati = 0
+    # 2. Scarica dati aggiornati usando getAnagrafiche (come da tua documentazione)
+    # Usiamo il filtro opzionale11='si' come nei test precedenti
+    filtri_bman = [{"chiave": "opzionale11", "operatore": "=", "valore": "si"}]
+    
+    soap_body_get = f"""<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <getAnagrafiche xmlns="http://cloud.bman.it/">
+      <chiave>{bman_key}</chiave>
+      <filtri><![CDATA[{json.dumps(filtri_bman)}]]></filtri>
+      <ordinamentoCampo>ID</ordinamentoCampo>
+      <ordinamentoDirezione>1</ordinamentoDirezione>
+      <numeroPagina>1</numeroPagina>
+      <listaDepositi><![CDATA[[1]]]></listaDepositi>
+    </getAnagrafiche>
+  </soap:Body>
+</soap:Envelope>"""
+    
+    resp = requests.post(bman_url, data=soap_body_get, headers={'Content-Type': 'text/xml', 'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'}, timeout=60)
+    tree = ET.fromstring(resp.content)
+    result_text = tree.find('.//{http://cloud.bman.it/}getAnagraficheResult').text
+    bman_data = {str(c['ID']): c for c in json.loads(result_text)} if result_text else {}
+
+    # 3. Analisi Google Sheet
+    sheet_values = sheet.get_all_records()
+    
+    if not sheet_values:
+        # Inizializzazione
+        intestazioni = list(mappatura.values())
+        righe = [intestazioni]
+        for data in bman_data.values():
+            righe.append([data.get(k, "") for k in mappatura.keys()])
+        sheet.update('A1', righe)
+        return "Foglio inizializzato. Modifica i dati e ripremi il pulsante."
+
+    # 4. Sincronizzazione Bidirezionale con setAnagrafica
+    formats = []
+    contatore_ok = 0
     log_dettagli = []
 
-    for row in sheet_rows:
-        art_id = str(row.get("ID")).strip()
-        if art_id not in bman_items: continue
+    for row_idx, row in enumerate(sheet_values, start=2):
+        c_id = str(row.get("ID Contatto"))
+        if c_id not in bman_data: continue
         
-        item_bman = bman_items[art_id]
-        payload = item_bman.copy()
+        art_originale = bman_data[c_id]
+        nuovo_payload = art_originale.copy()
         modificato = False
-        cambiamenti = []
-        
-        for b_key, header in mappatura.items():
-            val_foglio = str(row.get(header, "")).strip()
-            val_bman = str(item_bman.get(b_key, "")).strip()
-            
-            # Confronto puro senza normalizzazione
-            if val_foglio != val_bman and val_foglio != "":
-                payload[b_key] = val_foglio
+
+        for col_idx, (bman_key_attr, sheet_header) in enumerate(mappatura.items(), start=1):
+            val_sheet = str(row.get(sheet_header, "")).strip()
+            val_bman = str(art_originale.get(bman_key_attr, "")).strip()
+            cell_range = gspread.utils.rowcol_to_a1(row_idx, col_idx)
+
+            if val_sheet and val_sheet != val_bman:
+                nuovo_payload[bman_key_attr] = val_sheet
                 modificato = True
-                cambiamenti.append(f"{header}: '{val_bman}' -> '{val_foglio}'")
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}})
+                log_dettagli.append(f"ID {c_id}: {sheet_header} aggiornato.")
+            elif not val_sheet:
+                formats.append({"range": cell_range, "format": {"backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}}})
 
         if modificato:
-            # Pulizia dati per aggiornamento
-            payload.pop('przc', None)
-            payload.pop('przb', None)
-            payload["IDDeposito"] = 1
+            # USIAMO setAnagrafica per i prodotti
+            soap_body_set = f"""<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <setAnagrafica xmlns="http://cloud.bman.it/">
+      <chiave>{bman_key}</chiave>
+      <anagrafica><![CDATA[{json.dumps(nuovo_payload)}]]></anagrafica>
+    </setAnagrafica>
+  </soap:Body>
+</soap:Envelope>"""
             
-            soap_upd = f"""<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><InsertAnagrafica xmlns="http://cloud.bman.it/"><chiave>{bman_key}</chiave><anagrafica><![CDATA[{json.dumps(payload)}]]></anagrafica></InsertAnagrafica></soap:Body></soap:Envelope>"""
-            res = requests.post(bman_url, data=soap_upd, headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://cloud.bman.it/InsertAnagrafica'}, timeout=30)
+            headers_set = {'Content-Type': 'text/xml', 'SOAPAction': 'http://cloud.bman.it/setAnagrafica'}
+            res_set = requests.post(bman_url, data=soap_body_set, headers=headers_set, timeout=30)
+            tree_set = ET.fromstring(res_set.content)
+            res_val = tree_set.find('.//{http://cloud.bman.it/}setAnagraficaResult').text
             
-            # Analisi risposta bMan
-            node = ET.fromstring(res.content).find('.//{http://cloud.bman.it/}InsertAnagraficaResult')
-            risposta_testo = node.text if node is not None else "Nessuna risposta"
-            
-            if res.status_code == 200:
-                prodotti_aggiornati += 1
-                log_dettagli.append(f"ID {art_id}: {', '.join(cambiamenti)} | Risposta Bman: {risposta_testo}")
+            if res_val == "1":
+                contatore_ok += 1
             else:
-                log_dettagli.append(f"ID {art_id}: ERRORE CONNESSIONE {res.status_code}")
+                log_dettagli.append(f"❌ Errore ID {c_id}: Risposta {res_val}")
 
-    msg = f"Sincronizzazione completata. Aggiornati: {prodotti_aggiornati}\n\n"
-    msg += "DETTAGLIO LOG:\n" + "\n".join(log_dettagli if log_dettagli else ["Nessuna differenza rilevata tra Foglio e Bman."])
-    return msg
+    if formats:
+        sheet.batch_format(formats)
+    
+    return f"Sincronizzazione completata. Aggiornati: {contatore_ok}\n" + "\n".join(log_dettagli)

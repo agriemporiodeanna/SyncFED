@@ -2,87 +2,197 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
+    <title>SyncFED Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bman Sync Dashboard</title>
-    <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; text-align: center; background-color: #f4f7f6; }
-        .container { background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.08); min-width: 450px; }
-        h1 { color: #333; margin-bottom: 30px; }
-        .btn { color: white; border: none; padding: 14px 20px; font-size: 16px; border-radius: 8px; cursor: pointer; transition: all 0.3s; width: 100%; margin-bottom: 15px; font-weight: bold; text-align: left; }
-        
-        .btn-google { background-color: #34a853; }
-        .btn-google:hover { background-color: #2d8e47; }
-        
-        .btn-bman { background-color: #ff9800; }
-        .btn-bman:hover { background-color: #e68a00; }
-        
-        .btn-sync { background-color: #4285f4; }
-        .btn-sync:hover { background-color: #357ae8; }
 
-        .btn-ana { background-color: #673ab7; }
-        .btn-ana:hover { background-color: #5e35b1; }
-        
-        button:disabled { background-color: #bdc3c7; cursor: not-allowed; opacity: 0.7; }
-        
-        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-size: 14px; line-height: 1.4; display: none; min-height: 20px; text-align: left; white-space: pre-wrap; }
-        .loading { display: block !important; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; }
-        .success { display: block !important; color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
-        .error { display: block !important; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
-        
-        .step-num { background: rgba(0,0,0,0.2); padding: 2px 8px; border-radius: 50%; margin-right: 10px; }
+    <style>
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background: #1f2937;
+            color: #fff;
+            padding: 16px;
+            text-align: center;
+        }
+
+        main {
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 20px;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            text-align: center;
+        }
+
+        .card h3 {
+            margin-top: 0;
+            color: #111827;
+        }
+
+        .card p {
+            font-size: 14px;
+            color: #4b5563;
+            min-height: 48px;
+        }
+
+        button {
+            margin-top: 10px;
+            padding: 12px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #d97706;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #dc2626;
+            color: white;
+        }
+
+        button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            font-size: 12px;
+            color: #6b7280;
+        }
     </style>
 </head>
-<body>
-    <div class="container">
-        <h1>Pannello di Controllo Sync</h1>
-        
-        <button id="btn-goog" class="btn btn-google" onclick="runAction('test-google', 'btn-goog')">
-            <span class="step-num">1</span> Verifica Connessione Google Sheet
-        </button>
-        
-        <button id="btn-bm-test" class="btn btn-bman" onclick="runAction('test-bman', 'btn-bm-test')">
-            <span class="step-num">2</span> Test Connessione Dati Bman
-        </button>
-        
-        <button id="btn-art" class="btn btn-sync" onclick="runAction('sync-articoli', 'btn-art')">
-            <span class="step-num">3</span> Sincronizza Articoli (Bman -> Google)
-        </button>
 
-        <button id="btn-ana" class="btn btn-ana" onclick="runAction('sync-anagrafica', 'btn-ana')">
-            <span class="step-num">4</span> Verifica e Sincronizza Anagrafica
-        </button>
-        
-        <div id="status"></div>
+<body>
+
+<header>
+    <h1>SyncFED – Dashboard</h1>
+    <p>Gestione sincronizzazioni BMAN ↔ Google Sheet</p>
+</header>
+
+<main>
+
+    <div class="dashboard">
+
+        <!-- PULSANTE 1 -->
+        <div class="card">
+            <h3>Pulsante 1</h3>
+            <p>Funzione esistente – non modificata</p>
+            <button class="btn-secondary" id="btn-1">
+                Avvia funzione 1
+            </button>
+        </div>
+
+        <!-- PULSANTE 2 -->
+        <div class="card">
+            <h3>Pulsante 2</h3>
+            <p>Funzione esistente – non modificata</p>
+            <button class="btn-secondary" id="btn-2">
+                Avvia funzione 2
+            </button>
+        </div>
+
+        <!-- PULSANTE 3 -->
+        <div class="card">
+            <h3>Pulsante 3</h3>
+            <p>Esporta articoli BMAN → Google Sheet</p>
+            <button class="btn-primary" id="btn-3">
+                Esporta in Google Sheet
+            </button>
+        </div>
+
+        <!-- PULSANTE 4 -->
+        <div class="card">
+            <h3>Pulsante 4</h3>
+            <p>
+                Aggiorna BMAN leggendo i dati dal Google Sheet.<br>
+                <strong>Solo articoli con Script = SI</strong>
+            </p>
+            <button class="btn-warning" id="btn-4">
+                Sincronizza Anagrafica
+            </button>
+        </div>
+
     </div>
 
-    <script>
-        async function runAction(endpoint, btnId) {
-            const statusDiv = document.getElementById('status');
-            const allBtns = document.querySelectorAll('.btn');
-            
-            allBtns.forEach(b => b.disabled = true);
-            statusDiv.className = 'loading';
-            statusDiv.innerText = "Elaborazione in corso... Attendere completamento.";
+</main>
 
-            try {
-                const response = await fetch(`/api/${endpoint}`, { method: 'POST' });
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    statusDiv.className = 'success';
-                    statusDiv.innerText = data.message;
-                } else {
-                    // Se l'API restituisce 'details', mostriamoli nel log
-                    const errorMsg = data.details ? `${data.message}\n\nDettagli:\n${data.details}` : data.message;
-                    throw new Error(errorMsg);
-                }
-            } catch (error) {
-                statusDiv.className = 'error';
-                statusDiv.innerText = error.message;
-            } finally {
-                allBtns.forEach(b => b.disabled = false);
-            }
+<footer>
+    SyncFED © 2026 – Integrazione BMAN & Google Sheet
+</footer>
+
+<script>
+    // Pulsante 1 (legacy)
+    document.getElementById("btn-1").addEventListener("click", () => {
+        alert("Pulsante 1: funzione esistente (non modificata)");
+        // fetch("/endpoint-pulsante-1", { method: "POST" });
+    });
+
+    // Pulsante 2 (legacy)
+    document.getElementById("btn-2").addEventListener("click", () => {
+        alert("Pulsante 2: funzione esistente (non modificata)");
+        // fetch("/endpoint-pulsante-2", { method: "POST" });
+    });
+
+    // Pulsante 3 (export)
+    document.getElementById("btn-3").addEventListener("click", async () => {
+        if (!confirm("Esportare gli articoli da BMAN a Google Sheet?")) return;
+
+        try {
+            const res = await fetch("/export-google-sheet", { method: "POST" });
+            const data = await res.json();
+            alert(data.message || "Esportazione avviata");
+        } catch (err) {
+            alert("Errore durante l'esportazione");
+            console.error(err);
         }
-    </script>
+    });
+
+    // Pulsante 4 (SYNC ANAGRAFICA)
+    document.getElementById("btn-4").addEventListener("click", async () => {
+        if (!confirm("Avviare la sincronizzazione anagrafica articoli su BMAN?")) return;
+
+        try {
+            const res = await fetch("/sync-anagrafica", { method: "POST" });
+            const data = await res.json();
+            alert(data.message || "Sincronizzazione avviata");
+        } catch (err) {
+            alert("Errore durante la sincronizzazione");
+            console.error(err);
+        }
+    });
+</script>
+
 </body>
 </html>

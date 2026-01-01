@@ -1,25 +1,28 @@
 import requests
 import json
 import logging
-from datetime import datetime
-from googleapiclient.discovery import build
-from google.oauth2.service_account import Credentials
+import time
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # =========================
-# CONFIG
+# CONFIGURAZIONE
 # =========================
 
+# --- BMAN ---
 BMAN_BASE_URL = "https://DOMINIO.bman.it:3555/bmanapi.asmx"
 BMAN_KEY = "INSERISCI_CHIAVE_BMAN"
 
-SPREADSHEET_ID = "INSERISCI_ID_SHEET"
+# --- GOOGLE SHEET ---
+SPREADSHEET_ID = "INSERISCI_ID_GOOGLE_SHEET"
 SHEET_NAME = "ARTICOLI"
-
 SERVICE_ACCOUNT_FILE = "service_account.json"
 
-DRY_RUN = True  # <<< METTI False SOLO DOPO I TEST
+# --- MODALITÀ ---
+DRY_RUN = True        # <<< METTI False SOLO DOPO I TEST
+REQUEST_DELAY = 0.25 # per rispettare limite 5 req/sec BMAN
 
-# campi consentiti (Google Sheet → BMAN)
+# --- MAPPATURA CAMPI (Sheet → BMAN) ---
 UPDATABLE_FIELDS = {
     "Brand": "opzionale1",
     "Titolo IT": "opzionale2",
@@ -36,24 +39,38 @@ UPDATABLE_FIELDS = {
     "Categoria2": "strCategoria2"
 }
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
-
 # =========================
-# GOOGLE SHEETS
+# LOGGING
 # =========================
 
-def get_sheets():
-    creds = Credentials.from_service_account_file(
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+# =========================
+# GOOGLE SHEET
+# =========================
+
+def get_worksheet():
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
+
+    creds = ServiceAccountCredentials.from_json_keyfile_name(
         SERVICE_ACCOUNT_FILE,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        scope
     )
-    return build("sheets", "v4", credentials=creds)
+
+    client = gspread.authorize(creds)
+    return client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
 # =========================
 # BMAN API
 # =========================
 
-def bman_get_article_by_id(article_id):
+def bman_get_article(article_id):
     payload = {
         "chiave": BMAN_KEY,
         "filtri": json.dumps([
@@ -66,7 +83,11 @@ def bman_get_article_by_id(article_id):
         "dettaglioVarianti": False
     }
 
-    r = requests.post(f"{BMAN_BASE_URL}/getAnagrafiche", json=payload, timeout=20)
+    r = requests.post(
+        f"{BMAN_BASE_URL}/getAnagrafiche",
+        json=payload,
+        timeout=30
+    )
     r.raise_for_status()
     data = r.json()
     return data[0] if data else None
@@ -74,63 +95,76 @@ def bman_get_article_by_id(article_id):
 
 def bman_update_article(payload):
     payload["chiave"] = BMAN_KEY
-    r = requests.post(f"{BMAN_BASE_URL}/InsertAnagrafica", json=payload, timeout=20)
+
+    r = requests.post(
+        f"{BMAN_BASE_URL}/InsertAnagrafica",
+        json=payload,
+        timeout=30
+    )
     r.raise_for_status()
     return r.json()
 
 # =========================
-# UTILS
+# UTILITY
 # =========================
 
-def norm(v):
-    return "" if v is None else str(v).strip()
+def norm(val):
+    if val is None:
+        return ""
+    return str(val).strip()
 
 # =========================
-# CORE
+# CORE SYNC
 # =========================
 
 def sync_articoli():
-    sheets = get_sheets()
-    result = sheets.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=SHEET_NAME
-    ).execute()
+    ws = get_worksheet()
+    rows = ws.get_all_values()
 
-    rows = result.get("values", [])
+    if not rows or len(rows) < 2:
+        logging.warning("Foglio vuoto o senza dati")
+        return
+
     headers = rows[0]
-    data = rows[1:]
-
+    data_rows = rows[1:]
     idx = {h: i for i, h in enumerate(headers)}
 
-    for row in data:
+    updated = 0
+    skipped = 0
+
+    for row in data_rows:
         try:
             if norm(row[idx["Script"]]).lower() != "si":
+                skipped += 1
                 continue
 
             article_id = norm(row[idx["ID"]])
             codice = norm(row[idx["Codice"]])
 
-            if not article_id and not codice:
+            if not article_id:
+                skipped += 1
                 continue
 
-            bman_article = bman_get_article_by_id(article_id)
-            if not bman_article:
-                logging.warning(f"Articolo non trovato ID={article_id}")
+            bman_data = bman_get_article(article_id)
+            time.sleep(REQUEST_DELAY)
+
+            if not bman_data:
+                logging.warning(f"Articolo ID {article_id} non trovato su BMAN")
                 continue
 
             diff = {}
             for sheet_col, bman_field in UPDATABLE_FIELDS.items():
                 new_val = norm(row[idx.get(sheet_col)])
-                old_val = norm(bman_article.get(bman_field))
+                old_val = norm(bman_data.get(bman_field))
                 if new_val != old_val:
                     diff[bman_field] = new_val
 
             if not diff:
-                logging.info(f"[SKIP] {codice} nessuna modifica")
+                logging.info(f"[SKIP] {codice} nessuna variazione")
                 continue
 
             payload = {
-                "IDAnagrafica": article_id,
+                "IDAnagrafica": int(article_id),
                 "codice": codice,
                 **diff
             }
@@ -140,12 +174,18 @@ def sync_articoli():
             else:
                 bman_update_article(payload)
                 logging.info(f"[UPDATE] {codice} aggiornato")
+                updated += 1
+                time.sleep(REQUEST_DELAY)
 
         except Exception as e:
-            logging.error(f"Errore riga {row}: {e}")
+            logging.error(f"Errore su riga {row}: {e}")
+
+    logging.info(
+        f"SYNC COMPLETATO | aggiornati={updated} | skippati={skipped}"
+    )
 
 # =========================
-# MAIN
+# ENTRY POINT
 # =========================
 
 if __name__ == "__main__":

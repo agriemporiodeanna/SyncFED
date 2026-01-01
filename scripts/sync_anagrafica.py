@@ -9,20 +9,16 @@ from oauth2client.service_account import ServiceAccountCredentials
 # CONFIGURAZIONE
 # =========================
 
-# --- BMAN ---
 BMAN_BASE_URL = "https://DOMINIO.bman.it:3555/bmanapi.asmx"
 BMAN_KEY = "INSERISCI_CHIAVE_BMAN"
 
-# --- GOOGLE SHEET ---
 SPREADSHEET_ID = "INSERISCI_ID_GOOGLE_SHEET"
 SHEET_NAME = "ARTICOLI"
 SERVICE_ACCOUNT_FILE = "service_account.json"
 
-# --- MODALITÀ ---
-DRY_RUN = True        # <<< METTI False SOLO DOPO I TEST
-REQUEST_DELAY = 0.25 # per rispettare limite 5 req/sec BMAN
+DRY_RUN = True          # METTI False SOLO DOPO I TEST
+REQUEST_DELAY = 0.25   # limite 5 req/sec BMAN
 
-# --- MAPPATURA CAMPI (Sheet → BMAN) ---
 UPDATABLE_FIELDS = {
     "Brand": "opzionale1",
     "Titolo IT": "opzionale2",
@@ -39,14 +35,7 @@ UPDATABLE_FIELDS = {
     "Categoria2": "strCategoria2"
 }
 
-# =========================
-# LOGGING
-# =========================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 # =========================
 # GOOGLE SHEET
@@ -83,11 +72,7 @@ def bman_get_article(article_id):
         "dettaglioVarianti": False
     }
 
-    r = requests.post(
-        f"{BMAN_BASE_URL}/getAnagrafiche",
-        json=payload,
-        timeout=30
-    )
+    r = requests.post(f"{BMAN_BASE_URL}/getAnagrafiche", json=payload, timeout=30)
     r.raise_for_status()
     data = r.json()
     return data[0] if data else None
@@ -95,34 +80,27 @@ def bman_get_article(article_id):
 
 def bman_update_article(payload):
     payload["chiave"] = BMAN_KEY
-
-    r = requests.post(
-        f"{BMAN_BASE_URL}/InsertAnagrafica",
-        json=payload,
-        timeout=30
-    )
+    r = requests.post(f"{BMAN_BASE_URL}/InsertAnagrafica", json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
 # =========================
-# UTILITY
+# UTILS
 # =========================
 
-def norm(val):
-    if val is None:
-        return ""
-    return str(val).strip()
+def norm(v):
+    return "" if v is None else str(v).strip()
 
 # =========================
-# CORE SYNC
+# CORE
 # =========================
 
 def sync_articoli():
     ws = get_worksheet()
     rows = ws.get_all_values()
 
-    if not rows or len(rows) < 2:
-        logging.warning("Foglio vuoto o senza dati")
+    if len(rows) < 2:
+        logging.warning("Foglio Google Sheet vuoto")
         return
 
     headers = rows[0]
@@ -149,7 +127,7 @@ def sync_articoli():
             time.sleep(REQUEST_DELAY)
 
             if not bman_data:
-                logging.warning(f"Articolo ID {article_id} non trovato su BMAN")
+                logging.warning(f"Articolo ID {article_id} non trovato")
                 continue
 
             diff = {}
@@ -160,7 +138,7 @@ def sync_articoli():
                     diff[bman_field] = new_val
 
             if not diff:
-                logging.info(f"[SKIP] {codice} nessuna variazione")
+                logging.info(f"[SKIP] {codice} invariato")
                 continue
 
             payload = {
@@ -178,15 +156,6 @@ def sync_articoli():
                 time.sleep(REQUEST_DELAY)
 
         except Exception as e:
-            logging.error(f"Errore su riga {row}: {e}")
+            logging.error(f"Errore riga {row}: {e}")
 
-    logging.info(
-        f"SYNC COMPLETATO | aggiornati={updated} | skippati={skipped}"
-    )
-
-# =========================
-# ENTRY POINT
-# =========================
-
-if __name__ == "__main__":
-    sync_articoli()
+    logging.info(f"SYNC COMPLETATO | aggiornati={updated} | skippati={skipped}")

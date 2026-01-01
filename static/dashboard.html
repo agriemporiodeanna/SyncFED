@@ -15,7 +15,7 @@
 
         header {
             background: #1f2937;
-            color: #fff;
+            color: #ffffff;
             padding: 16px;
             text-align: center;
         }
@@ -60,25 +60,10 @@
             font-size: 14px;
         }
 
-        .btn-primary {
-            background: #2563eb;
-            color: white;
-        }
-
-        .btn-secondary {
-            background: #6b7280;
-            color: white;
-        }
-
-        .btn-warning {
-            background: #d97706;
-            color: white;
-        }
-
-        .btn-danger {
-            background: #dc2626;
-            color: white;
-        }
+        .btn-secondary { background: #6b7280; color: white; }
+        .btn-primary   { background: #2563eb; color: white; }
+        .btn-success   { background: #059669; color: white; }
+        .btn-warning   { background: #d97706; color: white; }
 
         button:disabled {
             background: #9ca3af;
@@ -98,7 +83,7 @@
 
 <header>
     <h1>SyncFED – Dashboard</h1>
-    <p>Gestione sincronizzazioni BMAN ↔ Google Sheet</p>
+    <p>Integrazione BMAN ↔ Google Sheet</p>
 </header>
 
 <main>
@@ -108,27 +93,27 @@
         <!-- PULSANTE 1 -->
         <div class="card">
             <h3>Pulsante 1</h3>
-            <p>Funzione esistente – non modificata</p>
+            <p>Test connessione a BMAN</p>
             <button class="btn-secondary" id="btn-1">
-                Avvia funzione 1
+                Test BMAN
             </button>
         </div>
 
         <!-- PULSANTE 2 -->
         <div class="card">
             <h3>Pulsante 2</h3>
-            <p>Funzione esistente – non modificata</p>
+            <p>Test connessione a Google Sheet</p>
             <button class="btn-secondary" id="btn-2">
-                Avvia funzione 2
+                Test Google Sheet
             </button>
         </div>
 
         <!-- PULSANTE 3 -->
         <div class="card">
             <h3>Pulsante 3</h3>
-            <p>Esporta articoli BMAN → Google Sheet</p>
+            <p>Esporta articoli (Script = SI) in Google Sheet</p>
             <button class="btn-primary" id="btn-3">
-                Esporta in Google Sheet
+                Export Articoli
             </button>
         </div>
 
@@ -136,11 +121,11 @@
         <div class="card">
             <h3>Pulsante 4</h3>
             <p>
-                Aggiorna BMAN leggendo i dati dal Google Sheet.<br>
-                <strong>Solo articoli con Script = SI</strong>
+                Aggiorna BMAN leggendo il Google Sheet<br>
+                <strong>(solo articoli Script = SI)</strong>
             </p>
             <button class="btn-warning" id="btn-4">
-                Sincronizza Anagrafica
+                Sync Anagrafica
             </button>
         </div>
 
@@ -149,49 +134,38 @@
 </main>
 
 <footer>
-    SyncFED © 2026 – Integrazione BMAN & Google Sheet
+    SyncFED © 2026
 </footer>
 
 <script>
-    // Pulsante 1 (legacy)
-    document.getElementById("btn-1").addEventListener("click", () => {
-        alert("Pulsante 1: funzione esistente (non modificata)");
-        // fetch("/endpoint-pulsante-1", { method: "POST" });
-    });
-
-    // Pulsante 2 (legacy)
-    document.getElementById("btn-2").addEventListener("click", () => {
-        alert("Pulsante 2: funzione esistente (non modificata)");
-        // fetch("/endpoint-pulsante-2", { method: "POST" });
-    });
-
-    // Pulsante 3 (export)
-    document.getElementById("btn-3").addEventListener("click", async () => {
-        if (!confirm("Esportare gli articoli da BMAN a Google Sheet?")) return;
+    async function callEndpoint(endpoint, confirmMessage) {
+        if (confirmMessage && !confirm(confirmMessage)) return;
 
         try {
-            const res = await fetch("/export-google-sheet", { method: "POST" });
+            const res = await fetch(endpoint, { method: "POST" });
             const data = await res.json();
-            alert(data.message || "Esportazione avviata");
+            alert(data.message || "Operazione avviata");
         } catch (err) {
-            alert("Errore durante l'esportazione");
+            alert("Errore di comunicazione con il server");
             console.error(err);
         }
-    });
+    }
 
-    // Pulsante 4 (SYNC ANAGRAFICA)
-    document.getElementById("btn-4").addEventListener("click", async () => {
-        if (!confirm("Avviare la sincronizzazione anagrafica articoli su BMAN?")) return;
+    // Pulsante 1 → test_bman.py
+    document.getElementById("btn-1").onclick = () =>
+        callEndpoint("/test-bman", "Eseguire il test di connessione a BMAN?");
 
-        try {
-            const res = await fetch("/sync-anagrafica", { method: "POST" });
-            const data = await res.json();
-            alert(data.message || "Sincronizzazione avviata");
-        } catch (err) {
-            alert("Errore durante la sincronizzazione");
-            console.error(err);
-        }
-    });
+    // Pulsante 2 → test_google.py
+    document.getElementById("btn-2").onclick = () =>
+        callEndpoint("/test-google", "Eseguire il test di connessione a Google Sheet?");
+
+    // Pulsante 3 → sync_articoli.py
+    document.getElementById("btn-3").onclick = () =>
+        callEndpoint("/sync-articoli", "Avviare l’export articoli verso Google Sheet?");
+
+    // Pulsante 4 → sync_anagrafica.py
+    document.getElementById("btn-4").onclick = () =>
+        callEndpoint("/sync-anagrafica", "Avviare la sincronizzazione anagrafica su BMAN?");
 </script>
 
 </body>
